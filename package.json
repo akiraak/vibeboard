@@ -24,6 +24,8 @@
     "build": "tsc",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/cli.ts",
     "start": "node dist/cli.js",
+    "sample": "npm run build && node dist/cli.js --root sample",
+    "sample:dev": "ts-node src/cli.ts --root sample",
     "prepare": "npm run build"
   },
   "dependencies": {

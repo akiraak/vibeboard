@@ -69,6 +69,30 @@ npx -y github:akiraak/vibeboard#v0.1.0
 npx -y github:akiraak/vibeboard#abc1234
 ```
 
+## サンプルで試す
+
+リポジトリを clone して、同梱の `sample/` ディレクトリに対して起動するとそのまま動かせる。
+
+```bash
+git clone https://github.com/akiraak/vibeboard.git
+cd vibeboard
+npm install
+npm run sample
+# → http://localhost:3010
+```
+
+`sample/` には以下が入っている。
+
+- `TODO.md` / `DONE.md`（編集対象ファイルの見本）
+- `docs/plans/`（`feature-x.md`、`feature-y.md`、サブディレクトリ `refactor/` の Step ファイル）
+- `docs/specs/`（`api.md`、`mermaid` 入りの `ui-flow.md`）
+- `vibeboard.config.json`（タブのラベルを日本語化したカスタム設定例）
+
+`npm run sample:dev` だと ts-node で起動するのでビルド不要。
+任意の別プロジェクトを開きたい場合は `npm start -- --root /path/to/project` で `--root` を直接渡す。
+
+## CLAUDE.md にスニペットを書く
+
 `CLAUDE.md` に AI エージェント向けの規約を入れたいときは、初回だけ `init` を流す。
 
 ```bash
