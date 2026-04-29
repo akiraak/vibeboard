@@ -51,31 +51,52 @@ vibeboard は親プロジェクトに以下があることを前提に動く。
 
 ## Quick start
 
-vibeboard は GitHub から直接取得して使う（npm レジストリには公開していない）。
-初回は `git clone` → `npm install`（devDependencies 込み）→ `prepare` での
-ビルドが走るので少し時間がかかるが、以降は npx のキャッシュが効く。
+vibeboard は **degit でプロジェクト直下に vendor して使う**（npm レジストリには公開していない）。
+**常にプロジェクト固有のカスタマイズを入れる前提**のツールなので、サブディレクトリとして
+取り込んで自由に手を加えられる形にしている。npx 単発実行や Git submodule での運用はサポートしない。
 
 ```bash
 # プロジェクト直下で実行
-npx -y github:akiraak/vibeboard
+npx -y degit akiraak/vibeboard vibeboard   # 既存 vibeboard/ がある場合は事前に削除
+cd vibeboard
+npm install                                # prepare で dist/ も生成される
 
+# 起動 (例: 親プロジェクト直下を root にして見る)
+node dist/cli.js --root ..
 # → http://localhost:3010 を開く
 ```
+
+親プロジェクト側の `.gitignore` には `vibeboard/dist/` と `vibeboard/node_modules/` を追加し、
+それ以外（`vibeboard/src/` など）は親リポジトリの git 管理対象に含める。
+プロジェクト固有のカスタマイズ差分はそのまま親リポジトリにコミットする運用。
 
 バージョンを固定したい場合は `#<tag>` または `#<commit-sha>` を付ける。
 
 ```bash
-npx -y github:akiraak/vibeboard#v0.1.0
-npx -y github:akiraak/vibeboard#abc1234
+npx -y degit akiraak/vibeboard#v0.1.0 vibeboard
+npx -y degit akiraak/vibeboard#abc1234 vibeboard
+```
+
+### upstream の取り込み直し
+
+vibeboard 本体に改善が入ったら、再 degit で上書き取り込みして、ローカルカスタマイズ差分を
+手作業でマージし直す運用になる（degit には `.git` が無いので、カスタマイズ差分は
+親リポジトリの git 履歴から拾う）。
+
+```bash
+rm -rf vibeboard
+npx -y degit akiraak/vibeboard vibeboard
+cd vibeboard && npm install
+# 親リポジトリの git diff で残っていたローカル改変を確認しつつ、必要分を再適用
 ```
 
 ## サンプルで試す
 
-リポジトリを clone して、同梱の `sample/` ディレクトリに対して起動するとそのまま動かせる。
+vendor 取り込み後、同梱の `sample/` ディレクトリに対して起動するとそのまま動かせる。
 
 ```bash
-git clone https://github.com/akiraak/vibeboard.git
-cd vibeboard
+npx -y degit akiraak/vibeboard vibeboard-trial
+cd vibeboard-trial
 npm install
 npm run sample
 # → http://localhost:3010
@@ -89,21 +110,25 @@ npm run sample
 - `vibeboard.config.json`（タブのラベルを日本語化したカスタム設定例）
 
 `npm run sample:dev` だと ts-node で起動するのでビルド不要。
-任意の別プロジェクトを開きたい場合は `npm start -- --root /path/to/project` で `--root` を直接渡す。
+任意の別プロジェクトを開きたい場合は `node dist/cli.js --root /path/to/project` で `--root` を直接渡す。
 
 ## CLAUDE.md にスニペットを書く
 
 `CLAUDE.md` に AI エージェント向けの規約を入れたいときは、初回だけ `init` を流す。
+vendor 済みの `vibeboard/` から、親プロジェクトを `--root` に指定して実行する。
 
 ```bash
-npx -y github:akiraak/vibeboard init            # CLAUDE.md にスニペットを追記 / マーカー間を更新
-npx -y github:akiraak/vibeboard init --dry-run  # 書き込まずに変更後の内容をプレビュー
+node vibeboard/dist/cli.js init --root .            # 親プロジェクトの CLAUDE.md にスニペットを追記
+node vibeboard/dist/cli.js init --root . --dry-run  # 書き込まずに変更後の内容をプレビュー
 ```
 
 `init` は `<!-- vibeboard:begin -->` ～ `<!-- vibeboard:end -->` のマーカーで囲って
 書き込むので、何度流しても多重追記にはならない（マーカー内が最新スニペットに置換される）。
 
 ## CLI 引数
+
+vendor 済みの `vibeboard/` 内で `node dist/cli.js ...` として呼び出す（あるいは
+`npm start -- ...` でも可）。以降、コマンド表記は `vibeboard` と省略する。
 
 ```
 vibeboard [options]              管理画面サーバを起動
@@ -214,7 +239,7 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 
 ## 親プロジェクトの `CLAUDE.md` に追記すべきスニペット
 
-`npx -y github:akiraak/vibeboard init` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
+`node vibeboard/dist/cli.js init --root .` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
 このまま末尾にコピーすれば良い（マーカーごと貼ること。`init` で再上書きできなくなる）。
 
 ````markdown
@@ -222,9 +247,11 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 ## 開発管理画面 (vibeboard)
 
 ローカル開発時のタスク・プラン管理は [vibeboard](https://github.com/akiraak/vibeboard) で行う。
+プロジェクト直下に degit で vendor してある（`./vibeboard/`）。
 
 ```bash
-npx -y github:akiraak/vibeboard
+# 親プロジェクト直下から
+node vibeboard/dist/cli.js --root .
 ```
 
 `http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md` を閲覧・編集できる。
@@ -271,7 +298,7 @@ npx -y github:akiraak/vibeboard
 - **GitHub Issues / Linear / Jira 連携**: ローカルの Markdown ファイルだけを扱う
 - **prompt / 会話履歴ビューア**: AI エージェント側のログは vibeboard の責務外
 - **マルチユーザー / 認証**: 個人ローカル用ツールに徹する（`127.0.0.1` バインド固定）
-- **本番デプロイ**: 配布物は `npx` での起動のみを想定する
+- **本番デプロイ**: 配布形態は degit による vendor のみ（npm 公開・`npx` 単発実行・Git submodule は想定しない）
 
 ## トラブルシュート
 
@@ -280,7 +307,7 @@ npx -y github:akiraak/vibeboard
 別のプロセスが `3010` を使っている。`--port` か `VIBEBOARD_PORT` で別ポートを指定する。
 
 ```bash
-npx -y github:akiraak/vibeboard --port 3020
+node vibeboard/dist/cli.js --port 3020
 ```
 
 ### WSL2 で外部から TODO.md を編集しても画面が更新されない

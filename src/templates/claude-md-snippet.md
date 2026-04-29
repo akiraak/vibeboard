@@ -1,9 +1,11 @@
 ## 開発管理画面 (vibeboard)
 
 ローカル開発時のタスク・プラン管理は [vibeboard](https://github.com/akiraak/vibeboard) で行う。
+プロジェクト直下に degit で vendor してある（`./vibeboard/`）。
 
 ```bash
-npx -y github:akiraak/vibeboard
+# 親プロジェクト直下から
+node vibeboard/dist/cli.js --root .
 ```
 
 `http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md` を閲覧・編集できる。
