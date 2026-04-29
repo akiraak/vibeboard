@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cooking Basket: dev-admin</title>
+  <title>__VIBEBOARD_TITLE__</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="dev-admin-layout">
+  <div class="vibeboard-layout">
     <header class="topbar">
       <div class="topbar-left">
-        <h1 class="topbar-brand">Cooking Basket: dev-admin</h1>
+        <h1 class="topbar-brand">__VIBEBOARD_TITLE__</h1>
         <nav class="topbar-tabs" id="topbar-tabs" role="tablist">
           <button type="button" class="topbar-tab" role="tab" data-category="todo" aria-selected="false">TODO</button>
           <button type="button" class="topbar-tab" role="tab" data-category="plans" aria-selected="false">Plans</button>
@@ -39,6 +39,7 @@
       </main>
     </div>
   </div>
+  <script>window.__VIBEBOARD__ = __VIBEBOARD_CLIENT_CONFIG__;</script>
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
     mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });

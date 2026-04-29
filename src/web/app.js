@@ -2,8 +2,8 @@
 
 const CATEGORIES = ['todo', 'plans', 'specs'];
 const TODO_FILES = ['TODO.md', 'DONE.md'];
-const STORAGE_CATEGORY = 'dev-admin.activeCategory';
-const STORAGE_EXPANDED = 'dev-admin.expanded';
+const STORAGE_CATEGORY = 'vibeboard.activeCategory';
+const STORAGE_EXPANDED = 'vibeboard.expanded';
 
 const sidebarNav = document.getElementById('sidebar-nav');
 const contentArea = document.getElementById('content-area');
@@ -39,7 +39,11 @@ let activeTocObserver = null;
 const selfWrittenMtimes = new Set();
 let saveInFlight = false;
 
-const TITLE_BASE = 'Cooking Basket: dev-admin';
+const TITLE_BASE = (typeof window !== 'undefined'
+  && window.__VIBEBOARD__
+  && typeof window.__VIBEBOARD__.title === 'string'
+  && window.__VIBEBOARD__.title)
+  || 'vibeboard';
 
 function isTodoDirty() {
   return todoState.content !== todoState.savedContent;

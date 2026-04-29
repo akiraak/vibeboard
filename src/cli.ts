@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import fs from 'fs';
 import path from 'path';
+import { resolveConfig } from './config';
+import { startServer } from './server';
 
 const args = process.argv.slice(2);
 
@@ -18,11 +20,16 @@ function printHelp(): void {
   vibeboard init [options]   親プロジェクトの CLAUDE.md に規約スニペットを追記する (未実装: Phase 3)
 
 Options:
+  --root <path>     対象プロジェクトのルート (デフォルト: cwd)
+  --port <n>        バインドするポート (デフォルト: 3010)
+  --title <s>       UI のブランド名 (デフォルト: <root>/package.json の name、無ければディレクトリ名)
   --help, -h        このヘルプを表示
   --version, -v     バージョンを表示
 
 環境変数:
-  DEV_ADMIN_PORT    バインドするポート (デフォルト: 3010)
+  VIBEBOARD_ROOT    --root と同等
+  VIBEBOARD_PORT    --port と同等 (DEV_ADMIN_PORT も後方互換で読む)
+  VIBEBOARD_TITLE   --title と同等
 
 詳細は README.md を参照。`);
 }
@@ -43,4 +50,11 @@ if (sub === 'init') {
   process.exit(1);
 }
 
-require('./server');
+try {
+  const { config } = resolveConfig(args);
+  startServer(config);
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`[vibeboard] 起動に失敗しました: ${msg}`);
+  process.exit(1);
+}
