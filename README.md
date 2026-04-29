@@ -51,18 +51,29 @@ vibeboard は親プロジェクトに以下があることを前提に動く。
 
 ## Quick start
 
+vibeboard は GitHub から直接取得して使う（npm レジストリには公開していない）。
+初回は `git clone` → `npm install`（devDependencies 込み）→ `prepare` での
+ビルドが走るので少し時間がかかるが、以降は npx のキャッシュが効く。
+
 ```bash
 # プロジェクト直下で実行
-npx -y vibeboard
+npx -y github:akiraak/vibeboard
 
 # → http://localhost:3010 を開く
+```
+
+バージョンを固定したい場合は `#<tag>` または `#<commit-sha>` を付ける。
+
+```bash
+npx -y github:akiraak/vibeboard#v0.1.0
+npx -y github:akiraak/vibeboard#abc1234
 ```
 
 `CLAUDE.md` に AI エージェント向けの規約を入れたいときは、初回だけ `init` を流す。
 
 ```bash
-npx -y vibeboard init            # CLAUDE.md にスニペットを追記 / マーカー間を更新
-npx -y vibeboard init --dry-run  # 書き込まずに変更後の内容をプレビュー
+npx -y github:akiraak/vibeboard init            # CLAUDE.md にスニペットを追記 / マーカー間を更新
+npx -y github:akiraak/vibeboard init --dry-run  # 書き込まずに変更後の内容をプレビュー
 ```
 
 `init` は `<!-- vibeboard:begin -->` ～ `<!-- vibeboard:end -->` のマーカーで囲って
@@ -110,7 +121,7 @@ v1 ではカテゴリ（`plans` / `specs`）と編集対象（`TODO.md` / `DONE.
 
 ## 親プロジェクトの `CLAUDE.md` に追記すべきスニペット
 
-`npx vibeboard init` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
+`npx -y github:akiraak/vibeboard init` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
 このまま末尾にコピーすれば良い（マーカーごと貼ること。`init` で再上書きできなくなる）。
 
 ````markdown
@@ -120,7 +131,7 @@ v1 ではカテゴリ（`plans` / `specs`）と編集対象（`TODO.md` / `DONE.
 ローカル開発時のタスク・プラン管理は [vibeboard](https://github.com/akiraak/vibeboard) で行う。
 
 ```bash
-npx -y vibeboard
+npx -y github:akiraak/vibeboard
 ```
 
 `http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md` を閲覧・編集できる。
@@ -176,7 +187,7 @@ npx -y vibeboard
 別のプロセスが `3010` を使っている。`--port` か `VIBEBOARD_PORT` で別ポートを指定する。
 
 ```bash
-npx -y vibeboard --port 3020
+npx -y github:akiraak/vibeboard --port 3020
 ```
 
 ### WSL2 で外部から TODO.md を編集しても画面が更新されない
@@ -191,7 +202,7 @@ WSL2 では `fs.watch` がホスト側のファイル変更を拾わないこと
 シンボリックリンクは `fs.realpath` で解決した実体が `--root` 配下に収まるかを
 チェックしているので、ルート外を指すリンクはたどれない（仕様）。
 
-### `npx vibeboard init` を流したくない / `CLAUDE.md` に手を入れたくない
+### `init` を流したくない / `CLAUDE.md` に手を入れたくない
 
 `init` は任意。スニペットを上のセクションから手動でコピペしても良いし、貼らなくても
 vibeboard サーバ自体は動く（規約に従うのは AI エージェント側なので、規約を共有する

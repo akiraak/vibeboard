@@ -24,7 +24,7 @@
     "build": "tsc",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/cli.ts",
     "start": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "dependencies": {
     "express": "^4.21.2",
