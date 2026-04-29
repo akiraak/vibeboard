@@ -1,7 +1,25 @@
 'use strict';
 
-const CATEGORIES = ['todo', 'plans', 'specs'];
-const TODO_FILES = ['TODO.md', 'DONE.md'];
+// 編集対象タブ（TODO 系）の URL スラッグ。表示ラベルは設定可能だがスラッグは固定。
+const EDITABLE_TAB = 'todo';
+
+// サーバから注入された設定。`__VIBEBOARD__` には categories / editable も含まれる。
+const VB_CONFIG = (typeof window !== 'undefined' && window.__VIBEBOARD__) || {};
+const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categories.length > 0
+  ? VB_CONFIG.categories
+  : [
+      { name: 'plans', label: 'Plans', archive: true },
+      { name: 'specs', label: 'Specs', archive: false },
+    ];
+const CATEGORY_BY_NAME = new Map(CATEGORY_DEFS.map(c => [c.name, c]));
+const EDITABLE_LABEL = (VB_CONFIG.editable && VB_CONFIG.editable.label) || 'TODO';
+const EDITABLE_FILES = (VB_CONFIG.editable && Array.isArray(VB_CONFIG.editable.files) && VB_CONFIG.editable.files.length > 0)
+  ? VB_CONFIG.editable.files
+  : [{ name: 'TODO.md', label: 'TODO' }, { name: 'DONE.md', label: 'DONE' }];
+const EDITABLE_NAMES = EDITABLE_FILES.map(f => f.name);
+const EDITABLE_BY_NAME = new Map(EDITABLE_FILES.map(f => [f.name, f]));
+const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name)];
+
 const STORAGE_CATEGORY = 'vibeboard.activeCategory';
 const STORAGE_EXPANDED = 'vibeboard.expanded';
 
@@ -11,8 +29,9 @@ const pageTitle = document.getElementById('page-title');
 const topbarSub = document.getElementById('topbar-sub');
 const topbarTabs = document.getElementById('topbar-tabs');
 
-let docsTree = { plans: { files: [], dirs: [] }, specs: { files: [], dirs: [] } };
-let activeCategory = 'plans';
+let docsTree = Object.fromEntries(CATEGORY_DEFS.map(c => [c.name, { files: [], dirs: [] }]));
+// デフォルトは最初のドキュメントカテゴリ（無ければ編集タブ）
+let activeCategory = CATEGORY_DEFS.length > 0 ? CATEGORY_DEFS[0].name : EDITABLE_TAB;
 let expanded = {};
 
 // TODO ビューの状態（renderTodoView で更新）
@@ -39,11 +58,7 @@ let activeTocObserver = null;
 const selfWrittenMtimes = new Set();
 let saveInFlight = false;
 
-const TITLE_BASE = (typeof window !== 'undefined'
-  && window.__VIBEBOARD__
-  && typeof window.__VIBEBOARD__.title === 'string'
-  && window.__VIBEBOARD__.title)
-  || 'vibeboard';
+const TITLE_BASE = (typeof VB_CONFIG.title === 'string' && VB_CONFIG.title) || 'vibeboard';
 
 function isTodoDirty() {
   return todoState.content !== todoState.savedContent;
@@ -157,8 +172,9 @@ function renderDir(category, dir, parentPath, depth) {
   name.textContent = dir.name;
   header.appendChild(name);
 
-  // plans 直下のディレクトリ（archive 本体は除く）にアーカイブボタンを付ける
-  if (category === 'plans' && depth === 0 && dir.name !== 'archive') {
+  // archive=true のカテゴリ直下のディレクトリ（archive 本体は除く）にアーカイブボタンを付ける
+  const catDef = CATEGORY_BY_NAME.get(category);
+  if (catDef && catDef.archive && depth === 0 && dir.name !== 'archive') {
     const archiveBtn = document.createElement('button');
     archiveBtn.type = 'button';
     archiveBtn.className = 'nav-dir-archive';
@@ -167,7 +183,7 @@ function renderDir(category, dir, parentPath, depth) {
     archiveBtn.textContent = '📦';
     archiveBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      archiveDirectory(dir.name);
+      archiveDirectory(category, dir.name);
     });
     header.appendChild(archiveBtn);
   }
@@ -199,20 +215,20 @@ function renderDir(category, dir, parentPath, depth) {
 function renderTodoSidebar() {
   sidebarNav.innerHTML = '';
   const frag = document.createDocumentFragment();
-  for (const name of TODO_FILES) {
+  for (const f of EDITABLE_FILES) {
     const a = document.createElement('a');
     a.className = 'nav-item';
-    a.href = `#todo/${encodeURIComponent(name)}`;
-    a.dataset.category = 'todo';
-    a.dataset.path = name;
+    a.href = `#${EDITABLE_TAB}/${encodeURIComponent(f.name)}`;
+    a.dataset.category = EDITABLE_TAB;
+    a.dataset.path = f.name;
 
     const title = document.createElement('div');
-    title.textContent = name.replace(/\.md$/, '');
+    title.textContent = f.label;
     a.appendChild(title);
 
     const fileName = document.createElement('div');
     fileName.className = 'nav-item-file';
-    fileName.textContent = name;
+    fileName.textContent = f.name;
     a.appendChild(fileName);
 
     frag.appendChild(a);
@@ -223,7 +239,7 @@ function renderTodoSidebar() {
 }
 
 function renderSidebar() {
-  if (activeCategory === 'todo') {
+  if (activeCategory === EDITABLE_TAB) {
     renderTodoSidebar();
     return;
   }
@@ -300,15 +316,16 @@ async function renderMarkdown(category, filePath) {
     topbarSub.textContent = `${category}/${filePath}`;
     contentArea.innerHTML = '';
 
-    // plans の直下にある md のみアーカイブ可能
-    if (category === 'plans' && !filePath.includes('/')) {
+    // archive=true のカテゴリ直下にある md のみアーカイブ可能
+    const catDef = CATEGORY_BY_NAME.get(category);
+    if (catDef && catDef.archive && !filePath.includes('/')) {
       const toolbar = document.createElement('div');
       toolbar.className = 'doc-toolbar';
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'doc-action';
       btn.textContent = 'アーカイブする';
-      btn.addEventListener('click', () => archivePlan(filename));
+      btn.addEventListener('click', () => archiveFile(category, filename));
       toolbar.appendChild(btn);
       contentArea.appendChild(toolbar);
     }
@@ -452,20 +469,20 @@ function setupTocActiveTracking(headings, linkById) {
   setActive(pickActive());
 }
 
-async function archiveDirectory(dirName) {
+async function archiveDirectory(category, dirName) {
   if (!confirm(`ディレクトリ ${dirName}/ を archive に移動します。よろしいですか？`)) return;
   try {
-    const res = await fetch(`/api/docs/plans/${encodeURIComponent(dirName)}/archive-dir`, { method: 'POST' });
+    const res = await fetch(`/api/docs/${encodeURIComponent(category)}/${encodeURIComponent(dirName)}/archive-dir`, { method: 'POST' });
     const json = await res.json();
     if (!json.success) throw new Error(json.error || 'アーカイブに失敗しました');
     docsTree = await fetchJson('/api/docs');
 
     const parsed = parseHash();
     const inArchivedDir = parsed
-      && parsed.category === 'plans'
+      && parsed.category === category
       && parsed.filePath.startsWith(`${dirName}/`);
     if (inArchivedDir) {
-      const newHash = `plans/${encodePath(`archive/${parsed.filePath}`)}`;
+      const newHash = `${category}/${encodePath(`archive/${parsed.filePath}`)}`;
       if (location.hash === `#${newHash}`) {
         renderSidebar();
         handleRoute();
@@ -480,14 +497,14 @@ async function archiveDirectory(dirName) {
   }
 }
 
-async function archivePlan(filename) {
+async function archiveFile(category, filename) {
   if (!confirm(`${filename} を archive に移動します。よろしいですか？`)) return;
   try {
-    const res = await fetch(`/api/docs/plans/${encodeURIComponent(filename)}/archive`, { method: 'POST' });
+    const res = await fetch(`/api/docs/${encodeURIComponent(category)}/${encodeURIComponent(filename)}/archive`, { method: 'POST' });
     const json = await res.json();
     if (!json.success) throw new Error(json.error || 'アーカイブに失敗しました');
     docsTree = await fetchJson('/api/docs');
-    const newHash = `plans/archive/${encodeURIComponent(filename)}`;
+    const newHash = `${category}/archive/${encodeURIComponent(filename)}`;
     if (location.hash === `#${newHash}`) {
       renderSidebar();
       handleRoute();
@@ -958,8 +975,8 @@ function expandAncestors(category, filePath) {
 function handleRoute() {
   const rawHash = location.hash.replace(/^#/, '');
 
-  // 旧 #design/xxx.html → #specs/design/xxx.html
-  if (rawHash.startsWith('design/')) {
+  // 旧 #design/xxx.html → #specs/design/xxx.html （specs カテゴリがある場合のみ）
+  if (rawHash.startsWith('design/') && CATEGORY_BY_NAME.has('specs')) {
     location.replace(`#specs/${rawHash}`);
     return;
   }
@@ -985,8 +1002,8 @@ function handleRoute() {
     needSidebarRerender = true;
   }
 
-  if (category === 'todo') {
-    if (!TODO_FILES.includes(filePath)) {
+  if (category === EDITABLE_TAB) {
+    if (!EDITABLE_NAMES.includes(filePath)) {
       if (needSidebarRerender) renderSidebar();
       else refreshActiveHighlight();
       showError('対応していないファイルです');
@@ -996,7 +1013,7 @@ function handleRoute() {
     if (todoState.name && todoState.name !== filePath && isTodoDirty()) {
       if (!confirm('未保存の変更があります。破棄して別のファイルに移動しますか？')) {
         // 元のファイルに戻す（履歴を増やさないよう replace）
-        location.replace(`#todo/${encodeURIComponent(todoState.name)}`);
+        location.replace(`#${EDITABLE_TAB}/${encodeURIComponent(todoState.name)}`);
         return;
       }
       // 破棄する（savedContent に戻すことで以降の isDirty を false にする）
@@ -1026,13 +1043,32 @@ function handleRoute() {
   }
 }
 
+// 設定された editable / categories から topbar の tab ボタンを動的に組み立てる
+function buildTabs() {
+  topbarTabs.innerHTML = '';
+  const tabs = [
+    { name: EDITABLE_TAB, label: EDITABLE_LABEL },
+    ...CATEGORY_DEFS.map(c => ({ name: c.name, label: c.label })),
+  ];
+  for (const t of tabs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'topbar-tab';
+    btn.setAttribute('role', 'tab');
+    btn.dataset.category = t.name;
+    btn.setAttribute('aria-selected', 'false');
+    btn.textContent = t.label;
+    topbarTabs.appendChild(btn);
+  }
+}
+
 function setupTabs() {
   topbarTabs.querySelectorAll('.topbar-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const cat = tab.dataset.category;
       if (!CATEGORIES.includes(cat) || activeCategory === cat) return;
-      // TODO タブから離れるときは未保存確認
-      if (activeCategory === 'todo' && isTodoDirty()) {
+      // 編集タブから離れるときは未保存確認
+      if (activeCategory === EDITABLE_TAB && isTodoDirty()) {
         if (!confirm('未保存の変更があります。破棄して他のタブに移動しますか？')) return;
         todoState.content = todoState.savedContent;
         todoState.conflict = null;
@@ -1068,7 +1104,7 @@ function setupRefreshShortcut() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'r' && e.key !== 'R') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (activeCategory !== 'todo' || !todoState.name) return;
+    if (activeCategory !== EDITABLE_TAB || !todoState.name) return;
     const target = e.target;
     if (target) {
       const tag = target.tagName;
@@ -1122,7 +1158,7 @@ async function handleExternalChange(name, mtime) {
   // 自分が書いた mtime は無視（SSE が PUT 応答より先に届いたケースも含む）
   if (selfWrittenMtimes.has(mtime)) return;
   // 現在開いていないファイルは何もしない（次に開くときに最新を取りに行く）
-  if (activeCategory !== 'todo' || todoState.name !== name) return;
+  if (activeCategory !== EDITABLE_TAB || todoState.name !== name) return;
   // 既知の mtime と一致するなら無視（自分の保存直後に想定）
   if (todoState.mtime === mtime) return;
   // 同じ競合 mtime を再通知された場合は UI 再構築を避ける
@@ -1344,10 +1380,10 @@ function openDiffModal(local, remote) {
 
 function refreshSidebarConflictBadge() {
   if (!sidebarNav) return;
-  const conflictName = (activeCategory === 'todo' && todoState.conflict) ? todoState.name : null;
+  const conflictName = (activeCategory === EDITABLE_TAB && todoState.conflict) ? todoState.name : null;
   sidebarNav.querySelectorAll('.nav-item').forEach(el => {
     // TODO カテゴリ以外のアイテムは触らない
-    if (el.dataset.category !== 'todo') return;
+    if (el.dataset.category !== EDITABLE_TAB) return;
     let badge = el.querySelector('.nav-item-badge');
     if (el.dataset.path === conflictName) {
       if (!badge) {
@@ -1365,6 +1401,7 @@ function refreshSidebarConflictBadge() {
 
 async function init() {
   loadPersisted();
+  buildTabs();
   setupTabs();
   setupBeforeUnload();
   setupRefreshShortcut();

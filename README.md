@@ -93,6 +93,7 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 | `--root <path>`    | 対象プロジェクトのルート                                             | `process.cwd()`                         |
 | `--port <n>`       | バインドするポート                                                   | `3010`                                  |
 | `--title <s>`      | UI のブランド名                                                      | `<root>/package.json` の `name`、無ければディレクトリ名 |
+| `--config <path>`  | 設定ファイル                                                         | `<root>/vibeboard.config.json` (あれば自動読込) |
 | `--help`, `-h`     | ヘルプを表示                                                         |                                         |
 | `--version`, `-v`  | バージョンを表示                                                     |                                         |
 
@@ -116,8 +117,76 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 
 ## 設定ファイル
 
-v1 ではカテゴリ（`plans` / `specs`）と編集対象（`TODO.md` / `DONE.md`）は固定。
-`vibeboard.config.json` でこれらを差し替えられるようにする計画はあるが未実装。
+`<root>/vibeboard.config.json` を置くと、UI のタブ・カテゴリ・編集対象ファイルを
+プロジェクトごとにカスタマイズできる。`--config <path>` で別パスを指定することも可能。
+ファイルが無ければデフォルト（`plans` / `specs` / `TODO.md` / `DONE.md`）で起動する。
+
+### スキーマ
+
+```jsonc
+{
+  // UI のブランド名 (--title / VIBEBOARD_TITLE と同等。CLI/環境変数の方が優先される)
+  "title": "my-project",
+
+  // バインドするポート (--port / VIBEBOARD_PORT と同等)
+  "port": 3010,
+
+  // ドキュメントカテゴリ。配列順がタブ表示順になる。
+  // 省略時は [plans (archive: true), specs (archive: false)]
+  "categories": [
+    {
+      "name": "plans",       // 必須。URL/ハッシュに使うスラッグ。'todo' は予約語、ユニーク
+      "label": "Plans",      // タブの表示名。省略時は name
+      "path": "docs/plans",  // root からの相対パス（または絶対パス）。省略時は `docs/<name>`
+      "archive": true        // true で archive ボタンと /archive エンドポイントが有効化される
+    },
+    { "name": "specs", "label": "Specs", "path": "docs/specs" }
+  ],
+
+  // 編集対象（TODO 系）タブ。タブのスラッグは固定で 'todo'
+  // 省略時は { label: 'TODO', files: [TODO.md, DONE.md] }
+  "editable": {
+    "label": "TODO",
+    "files": [
+      // 文字列だけならファイル名そのまま。オブジェクトで label / path をカスタムできる
+      "TODO.md",
+      { "name": "DONE.md", "label": "DONE", "path": "DONE.md" }
+    ]
+  }
+}
+```
+
+### カスタム例
+
+```json
+{
+  "title": "my-research",
+  "categories": [
+    { "name": "notes",   "label": "Notes",   "path": "notes",          "archive": true },
+    { "name": "papers",  "label": "Papers",  "path": "references"      },
+    { "name": "designs", "label": "Designs", "path": "docs/designs"    }
+  ],
+  "editable": {
+    "label": "Inbox",
+    "files": [
+      { "name": "INBOX.md",   "label": "Inbox" },
+      { "name": "ARCHIVE.md", "label": "Archive" }
+    ]
+  }
+}
+```
+
+### バリデーション
+
+設定ファイル読み込み時に以下を弾く（起動失敗）。
+
+- `categories[].name` が空 / 重複 / `todo`（予約語） / パス区切り文字を含む
+- `categories[].path` が root の外を指している
+- `editable.files[].name` が `.md` で終わらない / 重複 / パス区切り文字を含む
+- `editable.files[].path` が root の外を指している
+- `categories` または `editable.files` を空配列にしている（省略してデフォルトに戻す）
+
+優先順位は `CLI 引数 > 環境変数 > vibeboard.config.json > デフォルト`。
 
 ## 親プロジェクトの `CLAUDE.md` に追記すべきスニペット
 

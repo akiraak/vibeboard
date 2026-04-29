@@ -24,6 +24,7 @@ function printHelp(): void {
   --root <path>     対象プロジェクトのルート (デフォルト: cwd)
   --port <n>        バインドするポート (デフォルト: 3010)
   --title <s>       UI のブランド名 (デフォルト: <root>/package.json の name、無ければディレクトリ名)
+  --config <path>   設定ファイル (デフォルト: <root>/vibeboard.config.json があれば自動読込)
   --help, -h        このヘルプを表示
   --version, -v     バージョンを表示
 
@@ -36,6 +37,8 @@ init オプション:
   VIBEBOARD_ROOT    --root と同等
   VIBEBOARD_PORT    --port と同等 (DEV_ADMIN_PORT も後方互換で読む)
   VIBEBOARD_TITLE   --title と同等
+
+優先順位: CLI 引数 > 環境変数 > vibeboard.config.json > デフォルト
 
 詳細は README.md を参照。`);
 }

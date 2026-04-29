@@ -2,10 +2,7 @@ import express, { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
-import type { VibeboardConfig } from './config';
-
-const MD_CATEGORIES = ['plans', 'specs'] as const;
-type MdCategory = typeof MD_CATEGORIES[number];
+import type { CategoryConfig, EditableFileConfig, VibeboardConfig } from './config';
 
 interface TreeFile {
   name: string;
@@ -141,36 +138,29 @@ export function startServer(config: VibeboardConfig): void {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  const ROOT_DIR = config.root;
-  const DOCS_DIR = path.join(ROOT_DIR, 'docs');
-  // ルート直下の編集可能ファイル（パストラバーサル防止の固定マップ）
-  const EDITABLE_FILES: Record<string, string> = {
-    'TODO.md': path.join(ROOT_DIR, 'TODO.md'),
-    'DONE.md': path.join(ROOT_DIR, 'DONE.md'),
-  };
-
-  function findMdFile(category: MdCategory, file: string): string | null {
-    return findFileUnder(path.join(DOCS_DIR, category), file);
-  }
+  // カテゴリと編集対象を name→config の Map に持っておく（O(1) 参照）
+  const categoryByName = new Map<string, CategoryConfig>(
+    config.categories.map(c => [c.name, c])
+  );
+  const editableByName = new Map<string, EditableFileConfig>(
+    config.editable.files.map(f => [f.name, f])
+  );
 
   // ドキュメント一覧（ツリー構造）
   app.get('/api/docs', (_req: Request, res: Response) => {
-    res.json({
-      success: true,
-      data: {
-        plans: listTree(path.join(DOCS_DIR, 'plans'), ['.md', '.html']),
-        specs: listTree(path.join(DOCS_DIR, 'specs'), ['.md', '.html']),
-      },
-      error: null,
-    });
+    const data: Record<string, Tree> = {};
+    for (const cat of config.categories) {
+      data[cat.name] = listTree(cat.path, ['.md', '.html']);
+    }
+    res.json({ success: true, data, error: null });
   });
 
   // markdown ドキュメント取得（HTML 変換）
   app.get('/api/docs/:category/:file', (req: Request, res: Response) => {
-    const category = req.params.category as string;
+    const cat = categoryByName.get(req.params.category as string);
     const file = req.params.file as string;
 
-    if (!MD_CATEGORIES.includes(category as MdCategory)) {
+    if (!cat) {
       res.status(400).json({ success: false, data: null, error: '不正なカテゴリです' });
       return;
     }
@@ -179,7 +169,7 @@ export function startServer(config: VibeboardConfig): void {
       return;
     }
 
-    const filePath = findMdFile(category as MdCategory, file);
+    const filePath = findFileUnder(cat.path, file);
     if (!filePath) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
       return;
@@ -194,10 +184,10 @@ export function startServer(config: VibeboardConfig): void {
 
   // design HTML をそのまま返す（iframe 用・カテゴリ指定）
   app.get('/api/design/:category/:file', (req: Request, res: Response) => {
-    const category = req.params.category as string;
+    const cat = categoryByName.get(req.params.category as string);
     const file = req.params.file as string;
 
-    if (!MD_CATEGORIES.includes(category as MdCategory)) {
+    if (!cat) {
       res.status(400).send('不正なカテゴリです');
       return;
     }
@@ -206,7 +196,7 @@ export function startServer(config: VibeboardConfig): void {
       return;
     }
 
-    const filePath = findFileUnder(path.join(DOCS_DIR, category), file);
+    const filePath = findFileUnder(cat.path, file);
     if (!filePath) {
       res.status(404).send('ファイルが見つかりません');
       return;
@@ -214,9 +204,18 @@ export function startServer(config: VibeboardConfig): void {
     res.type('html').sendFile(filePath);
   });
 
-  // plans 直下のディレクトリをアーカイブ（docs/plans/<dir>/ → docs/plans/archive/<dir>/）
-  app.post('/api/docs/plans/:dir/archive-dir', (req: Request, res: Response) => {
+  // カテゴリ直下のディレクトリをアーカイブ（<category>/<dir>/ → <category>/archive/<dir>/）
+  app.post('/api/docs/:category/:dir/archive-dir', (req: Request, res: Response) => {
+    const cat = categoryByName.get(req.params.category as string);
     const dirName = req.params.dir as string;
+    if (!cat) {
+      res.status(400).json({ success: false, data: null, error: '不正なカテゴリです' });
+      return;
+    }
+    if (!cat.archive) {
+      res.status(400).json({ success: false, data: null, error: 'このカテゴリは archive 操作を許可していません' });
+      return;
+    }
     if (
       !dirName
       || dirName.includes('..')
@@ -228,13 +227,12 @@ export function startServer(config: VibeboardConfig): void {
       res.status(400).json({ success: false, data: null, error: '不正なディレクトリ名です' });
       return;
     }
-    const plansDir = path.join(DOCS_DIR, 'plans');
-    const src = path.join(plansDir, dirName);
+    const src = path.join(cat.path, dirName);
     if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
       res.status(404).json({ success: false, data: null, error: 'ディレクトリが見つかりません' });
       return;
     }
-    const archiveDir = path.join(plansDir, 'archive');
+    const archiveDir = path.join(cat.path, 'archive');
     if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
     const dst = path.join(archiveDir, dirName);
     if (fs.existsSync(dst)) {
@@ -245,20 +243,28 @@ export function startServer(config: VibeboardConfig): void {
     res.json({ success: true, data: { path: `archive/${dirName}` }, error: null });
   });
 
-  // plans の md をアーカイブ（docs/plans/<file> → docs/plans/archive/<file>）
-  app.post('/api/docs/plans/:file/archive', (req: Request, res: Response) => {
+  // カテゴリ直下の md をアーカイブ（<category>/<file> → <category>/archive/<file>）
+  app.post('/api/docs/:category/:file/archive', (req: Request, res: Response) => {
+    const cat = categoryByName.get(req.params.category as string);
     const file = req.params.file as string;
+    if (!cat) {
+      res.status(400).json({ success: false, data: null, error: '不正なカテゴリです' });
+      return;
+    }
+    if (!cat.archive) {
+      res.status(400).json({ success: false, data: null, error: 'このカテゴリは archive 操作を許可していません' });
+      return;
+    }
     if (!isSafeName(file, '.md')) {
       res.status(400).json({ success: false, data: null, error: '不正なファイル名です' });
       return;
     }
-    const plansDir = path.join(DOCS_DIR, 'plans');
-    const src = path.join(plansDir, file);
+    const src = path.join(cat.path, file);
     if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
       return;
     }
-    const archiveDir = path.join(plansDir, 'archive');
+    const archiveDir = path.join(cat.path, 'archive');
     if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
     const dst = path.join(archiveDir, file);
     if (fs.existsSync(dst)) {
@@ -269,7 +275,7 @@ export function startServer(config: VibeboardConfig): void {
     res.json({ success: true, data: { path: `archive/${file}` }, error: null });
   });
 
-  // SSE: ルート直下の編集可能ファイルの外部変更を通知
+  // SSE: 編集可能ファイルの外部変更を通知
   // 注: `/api/files/:name` より先にマウントすること（:name にマッチしてしまうため）
   app.get('/api/files/watch', (req: Request, res: Response) => {
     res.status(200);
@@ -280,16 +286,16 @@ export function startServer(config: VibeboardConfig): void {
     res.flushHeaders?.();
 
     const lastMtime: Record<string, number> = {};
-    for (const [name, abs] of Object.entries(EDITABLE_FILES)) {
-      if (fs.existsSync(abs)) lastMtime[name] = fs.statSync(abs).mtimeMs;
+    for (const [name, ec] of editableByName) {
+      if (fs.existsSync(ec.path)) lastMtime[name] = fs.statSync(ec.path).mtimeMs;
     }
 
     const sendChange = (name: string) => {
-      const abs = EDITABLE_FILES[name];
-      if (!abs || !fs.existsSync(abs)) return;
+      const ec = editableByName.get(name);
+      if (!ec || !fs.existsSync(ec.path)) return;
       let mtime: number;
       try {
-        mtime = fs.statSync(abs).mtimeMs;
+        mtime = fs.statSync(ec.path).mtimeMs;
       } catch {
         return;
       }
@@ -300,9 +306,9 @@ export function startServer(config: VibeboardConfig): void {
 
     // fs.watch はエディタの atomic rename で発火しないことがあるため、個別監視 + 下のポーリングで保険
     const watchers: fs.FSWatcher[] = [];
-    for (const [name, abs] of Object.entries(EDITABLE_FILES)) {
+    for (const [name, ec] of editableByName) {
       try {
-        const watcher = fs.watch(abs, () => sendChange(name));
+        const watcher = fs.watch(ec.path, () => sendChange(name));
         watcher.on('error', () => { /* ignore: poll で拾う */ });
         watchers.push(watcher);
       } catch {
@@ -312,7 +318,7 @@ export function startServer(config: VibeboardConfig): void {
 
     // ポーリング保険（WSL2 で fs.watch が不安定な事例があるため）
     const pollInterval = setInterval(() => {
-      for (const name of Object.keys(EDITABLE_FILES)) sendChange(name);
+      for (const name of editableByName.keys()) sendChange(name);
     }, 2000);
 
     // keep-alive ping
@@ -330,48 +336,46 @@ export function startServer(config: VibeboardConfig): void {
     req.on('close', cleanup);
   });
 
-  // ルート直下の編集可能ファイル: 生 Markdown + mtime
+  // 編集可能ファイル: 生 Markdown + mtime
   app.get('/api/files/:name', (req: Request, res: Response) => {
-    const name = req.params.name as string;
-    const abs = EDITABLE_FILES[name];
-    if (!abs) {
+    const ec = editableByName.get(req.params.name as string);
+    if (!ec) {
       res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
       return;
     }
-    if (!fs.existsSync(abs)) {
+    if (!fs.existsSync(ec.path)) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
       return;
     }
-    const content = fs.readFileSync(abs, 'utf-8');
-    const mtime = fs.statSync(abs).mtimeMs;
+    const content = fs.readFileSync(ec.path, 'utf-8');
+    const mtime = fs.statSync(ec.path).mtimeMs;
     res.json({ success: true, data: { content, mtime }, error: null });
   });
 
-  // ルート直下の編集可能ファイル: marked で HTML 化
+  // 編集可能ファイル: marked で HTML 化
   app.get('/api/files/:name/render', (req: Request, res: Response) => {
     const name = req.params.name as string;
-    const abs = EDITABLE_FILES[name];
-    if (!abs) {
+    const ec = editableByName.get(name);
+    if (!ec) {
       res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
       return;
     }
-    if (!fs.existsSync(abs)) {
+    if (!fs.existsSync(ec.path)) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
       return;
     }
-    const raw = fs.readFileSync(abs, 'utf-8');
-    const mtime = fs.statSync(abs).mtimeMs;
+    const raw = fs.readFileSync(ec.path, 'utf-8');
+    const mtime = fs.statSync(ec.path).mtimeMs;
     const title = extractMdTitle(raw, name.replace(/\.md$/, ''));
     const md = raw.replace(/^---[\s\S]*?---\n*/, '');
     const html = marked(md) as string;
     res.json({ success: true, data: { title, html, mtime }, error: null });
   });
 
-  // ルート直下の編集可能ファイル: 保存（mtime 楽観ロック + tmp → rename のアトミック書き込み）
+  // 編集可能ファイル: 保存（mtime 楽観ロック + tmp → rename のアトミック書き込み）
   app.put('/api/files/:name', (req: Request, res: Response) => {
-    const name = req.params.name as string;
-    const abs = EDITABLE_FILES[name];
-    if (!abs) {
+    const ec = editableByName.get(req.params.name as string);
+    if (!ec) {
       res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
       return;
     }
@@ -380,11 +384,11 @@ export function startServer(config: VibeboardConfig): void {
       res.status(400).json({ success: false, data: null, error: 'content / baseMtime が不正です' });
       return;
     }
-    if (!fs.existsSync(abs)) {
+    if (!fs.existsSync(ec.path)) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
       return;
     }
-    const currentMtime = fs.statSync(abs).mtimeMs;
+    const currentMtime = fs.statSync(ec.path).mtimeMs;
     if (currentMtime !== body.baseMtime) {
       res.status(409).json({
         success: false,
@@ -393,10 +397,10 @@ export function startServer(config: VibeboardConfig): void {
       });
       return;
     }
-    const tmp = `${abs}.tmp.${process.pid}.${Date.now()}`;
+    const tmp = `${ec.path}.tmp.${process.pid}.${Date.now()}`;
     try {
       fs.writeFileSync(tmp, body.content, 'utf-8');
-      fs.renameSync(tmp, abs);
+      fs.renameSync(tmp, ec.path);
     } catch (e) {
       if (fs.existsSync(tmp)) {
         try { fs.unlinkSync(tmp); } catch { /* ignore */ }
@@ -404,7 +408,7 @@ export function startServer(config: VibeboardConfig): void {
       res.status(500).json({ success: false, data: null, error: '書き込みに失敗しました' });
       return;
     }
-    const newMtime = fs.statSync(abs).mtimeMs;
+    const newMtime = fs.statSync(ec.path).mtimeMs;
     res.json({ success: true, data: { mtime: newMtime }, error: null });
   });
 
@@ -412,8 +416,22 @@ export function startServer(config: VibeboardConfig): void {
   // 配布物は `vibeboard/src/web/` に生のまま含まれる（tsconfig で除外、package.json の files で同梱）
   const webDir = path.join(__dirname, '..', 'src', 'web');
   const indexHtmlRaw = fs.readFileSync(path.join(webDir, 'index.html'), 'utf-8');
+  // クライアント側に出すカテゴリ情報（絶対パスは漏らさない）
+  const clientCategories = config.categories.map(c => ({
+    name: c.name,
+    label: c.label,
+    archive: c.archive,
+  }));
+  const clientEditable = {
+    label: config.editable.label,
+    files: config.editable.files.map(f => ({ name: f.name, label: f.label })),
+  };
   const renderIndexHtml = (): string => {
-    const clientConfig = JSON.stringify({ title: config.title });
+    const clientConfig = JSON.stringify({
+      title: config.title,
+      categories: clientCategories,
+      editable: clientEditable,
+    });
     return indexHtmlRaw
       .replace(/__VIBEBOARD_TITLE__/g, escapeHtml(config.title))
       .replace(/__VIBEBOARD_CLIENT_CONFIG__/g, clientConfig);
@@ -430,5 +448,7 @@ export function startServer(config: VibeboardConfig): void {
     console.log(`[vibeboard] running at http://${config.host}:${config.port}`);
     console.log(`[vibeboard] root: ${config.root}`);
     console.log(`[vibeboard] title: ${config.title}`);
+    console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
+    console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
   });
 }
