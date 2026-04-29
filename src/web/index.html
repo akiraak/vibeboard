@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cooking Basket: dev-admin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="dev-admin-layout">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 class="topbar-brand">Cooking Basket: dev-admin</h1>
+        <nav class="topbar-tabs" id="topbar-tabs" role="tablist">
+          <button type="button" class="topbar-tab" role="tab" data-category="todo" aria-selected="false">TODO</button>
+          <button type="button" class="topbar-tab" role="tab" data-category="plans" aria-selected="false">Plans</button>
+          <button type="button" class="topbar-tab" role="tab" data-category="specs" aria-selected="false">Specs</button>
+        </nav>
+        <div id="sse-indicator" class="sse-indicator" hidden>
+          <span class="sse-indicator-dot"></span>
+          <span class="sse-indicator-text">リアルタイム同期: 切断中（再接続を試行中）</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <h2 class="topbar-title" id="page-title">ドキュメント</h2>
+        <div class="topbar-sub" id="topbar-sub"></div>
+      </div>
+    </header>
+    <div class="main-body">
+      <aside class="sidebar">
+        <nav class="sidebar-nav" id="sidebar-nav">
+          <div class="loading-text">読み込み中...</div>
+        </nav>
+      </aside>
+      <main class="main-content">
+        <div class="content-area" id="content-area">
+          <div class="empty-state">サイドバーからドキュメントを選択してください。</div>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+    window.mermaid = mermaid;
+    window.dispatchEvent(new CustomEvent('mermaid-ready'));
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

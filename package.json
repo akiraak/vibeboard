@@ -1,0 +1,41 @@
+{
+  "name": "vibeboard",
+  "version": "0.1.0",
+  "description": "バイブコーディングに最適化されたローカル開発用の管理画面",
+  "license": "Unlicense",
+  "author": "akiraak",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akiraak/vibeboard.git"
+  },
+  "bin": {
+    "vibeboard": "dist/cli.js"
+  },
+  "main": "dist/server.js",
+  "files": [
+    "dist",
+    "src/web",
+    "src/templates"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "nodemon --watch src --ext ts --exec ts-node src/cli.ts",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "marked": "^17.0.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/marked": "^5.0.2",
+    "@types/node": "^22.10.0",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  }
+}
