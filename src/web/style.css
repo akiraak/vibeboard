@@ -133,6 +133,58 @@ a { color: inherit; text-decoration: none; }
   border-right: 1px solid var(--side-border);
   color: var(--text);
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.18s ease;
+}
+
+.main-body.sidebar-collapsed .sidebar,
+html.pre-sidebar-collapsed .sidebar {
+  width: 0;
+  border-right: none;
+}
+
+/* Sidebar toggle handle: 常に sidebar と main の間に存在する細い縦帯 */
+.sidebar-toggle {
+  flex-shrink: 0;
+  width: 14px;
+  background: var(--side-bg);
+  border: none;
+  border-right: 1px solid var(--side-border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-sub);
+  font-size: 10px;
+  font-family: inherit;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.sidebar-toggle::before {
+  content: "\25C2"; /* ◂ */
+  line-height: 1;
+}
+
+.main-body.sidebar-collapsed .sidebar-toggle::before,
+html.pre-sidebar-collapsed .sidebar-toggle::before {
+  content: "\25B8"; /* ▸ */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
 }
 
 .sidebar-nav {
