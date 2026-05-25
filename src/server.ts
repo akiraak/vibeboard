@@ -56,6 +56,53 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// マークダウン中の <img src="..."> / <audio src="..."> / <video src="..."> / <source src="...">
+// と、メディア系拡張子に向く <a href="..."> の **相対パス** を /files/<rel-from-root> に書き換える。
+// 元の Markdown は無編集のため GitHub / VSCode プレビュー等の相対パス参照は壊れない。
+// 絶対 URL (http(s):// / // / data: / mailto: / # / 先頭 /) はそのまま。
+// rootDir 外を指す相対パスもそのまま（リンク切れ表示にする）。
+// <a href> は画像/音声/動画系拡張子のみ対象。
+// .md 同士の遷移リンクは SPA 側で扱う想定のため触らない。
+const ASSET_LINK_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp3|wav|ogg|flac|m4a|aac|mp4|webm|ogv|mov)(?:$|[?#])/i;
+
+function resolveRelativeToFiles(src: string, mdDir: string, rootDir: string): string | null {
+  const reAbsolute = /^(https?:)?\/\/|^data:|^mailto:|^tel:|^#|^\//i;
+  if (reAbsolute.test(src)) return null;
+  const hashIdx = src.indexOf('#');
+  const queryIdx = src.indexOf('?');
+  let cutAt = -1;
+  if (hashIdx !== -1) cutAt = hashIdx;
+  if (queryIdx !== -1 && (cutAt === -1 || queryIdx < cutAt)) cutAt = queryIdx;
+  const pathPart = cutAt === -1 ? src : src.slice(0, cutAt);
+  const suffix = cutAt === -1 ? '' : src.slice(cutAt);
+  if (!pathPart) return null;
+  const abs = path.resolve(mdDir, pathPart);
+  const relFromRoot = path.relative(rootDir, abs);
+  if (relFromRoot.startsWith('..') || path.isAbsolute(relFromRoot)) return null;
+  const encoded = relFromRoot.split(path.sep).map(encodeURIComponent).join('/');
+  return '/files/' + encoded + suffix;
+}
+
+function rewriteRelativeAssetUrls(html: string, mdFilePath: string, rootDir: string): string {
+  const mdDir = path.dirname(mdFilePath);
+  // <img>, <audio>, <video>, <source> の src 属性を書き換え (タグ名は共通処理)
+  let out = html.replace(
+    /<(img|audio|video|source)\b([^>]*?)\ssrc=(["'])([^"']+)\3([^>]*)>/gi,
+    (match, tag, before, quote, src, after) => {
+      const newSrc = resolveRelativeToFiles(src, mdDir, rootDir);
+      if (newSrc === null) return match;
+      return `<${tag}${before} src=${quote}${newSrc}${quote}${after}>`;
+    },
+  );
+  out = out.replace(/<a\b([^>]*?)\shref=(["'])([^"']+)\2([^>]*)>/gi, (match, before, quote, href, after) => {
+    if (!ASSET_LINK_EXT.test(href)) return match;
+    const newHref = resolveRelativeToFiles(href, mdDir, rootDir);
+    if (newHref === null) return match;
+    return `<a${before} href=${quote}${newHref}${quote}${after}>`;
+  });
+  return out;
+}
+
 // カテゴリ配下を再帰的にツリー化する（mtime 降順で並べる）
 function listTree(absDir: string, exts: string[], relPrefix: string = ''): Tree {
   if (!fs.existsSync(absDir)) return { files: [], dirs: [] };
@@ -100,6 +147,19 @@ function isSafeName(file: string, ext: string): boolean {
   return !file.includes('..') && !file.includes('/') && !file.includes('\\') && file.endsWith(ext);
 }
 
+// サブディレクトリを含むパスの安全性を検証する。
+// `..` / 空セグメント / Windows パス区切り / 絶対パスを弾き、末尾拡張子を強制する。
+function isSafeSubPath(subPath: string, ext: string): boolean {
+  if (!subPath) return false;
+  if (subPath.includes('\\')) return false;
+  if (subPath.startsWith('/')) return false;
+  if (!subPath.endsWith(ext)) return false;
+  for (const seg of subPath.split('/')) {
+    if (seg === '' || seg === '.' || seg === '..') return false;
+  }
+  return true;
+}
+
 // `child` が `root` 配下に収まることを realpath 越しに保証する。
 // シンボリックリンクが root 外を指すケースを弾くための安全網。
 function isInsideRoot(child: string, root: string): boolean {
@@ -111,27 +171,6 @@ function isInsideRoot(child: string, root: string): boolean {
   } catch {
     return false;
   }
-}
-
-// カテゴリルートからファイルを再帰的に探す（サブディレクトリ対応）
-function findFileUnder(root: string, file: string): string | null {
-  if (!fs.existsSync(root)) return null;
-  const stack: string[] = [root];
-  while (stack.length > 0) {
-    const dir = stack.pop() as string;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) continue;
-      const abs = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!isInsideRoot(abs, root)) continue;
-        stack.push(abs);
-      } else if (entry.isFile() && entry.name === file) {
-        if (!isInsideRoot(abs, root)) continue;
-        return abs;
-      }
-    }
-  }
-  return null;
 }
 
 export function startServer(config: VibeboardConfig): void {
@@ -155,50 +194,59 @@ export function startServer(config: VibeboardConfig): void {
     res.json({ success: true, data, error: null });
   });
 
-  // markdown ドキュメント取得（HTML 変換）
-  app.get('/api/docs/:category/:file', (req: Request, res: Response) => {
+  // markdown ドキュメント取得（HTML 変換）。サブパス対応 (`docs/specs/design/.../README.md` 等)
+  app.get('/api/docs/:category/*', (req: Request, res: Response) => {
     const cat = categoryByName.get(req.params.category as string);
-    const file = req.params.file as string;
+    const subPath = (req.params[0] as string) || '';
 
     if (!cat) {
       res.status(400).json({ success: false, data: null, error: '不正なカテゴリです' });
       return;
     }
-    if (!isSafeName(file, '.md')) {
-      res.status(400).json({ success: false, data: null, error: '不正なファイル名です' });
+    if (!isSafeSubPath(subPath, '.md')) {
+      res.status(400).json({ success: false, data: null, error: '不正なファイルパスです' });
       return;
     }
 
-    const filePath = findFileUnder(cat.path, file);
-    if (!filePath) {
+    const filePath = path.resolve(cat.path, subPath);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    if (!isInsideRoot(filePath, cat.path)) {
+      res.status(400).json({ success: false, data: null, error: '不正なファイルパスです' });
       return;
     }
 
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const title = extractMdTitle(raw, file.replace(/\.md$/, ''));
+    const basename = path.basename(subPath, '.md');
+    const title = extractMdTitle(raw, basename);
     const md = raw.replace(/^---[\s\S]*?---\n*/, '');
-    const html = marked(md) as string;
+    const html = rewriteRelativeAssetUrls(marked(md) as string, filePath, config.root);
     res.json({ success: true, data: { title, html }, error: null });
   });
 
-  // design HTML をそのまま返す（iframe 用・カテゴリ指定）
-  app.get('/api/design/:category/:file', (req: Request, res: Response) => {
+  // design HTML をそのまま返す（iframe 用・カテゴリ指定）。サブパス対応
+  app.get('/api/design/:category/*', (req: Request, res: Response) => {
     const cat = categoryByName.get(req.params.category as string);
-    const file = req.params.file as string;
+    const subPath = (req.params[0] as string) || '';
 
     if (!cat) {
       res.status(400).send('不正なカテゴリです');
       return;
     }
-    if (!isSafeName(file, '.html')) {
-      res.status(400).send('不正なファイル名です');
+    if (!isSafeSubPath(subPath, '.html')) {
+      res.status(400).send('不正なファイルパスです');
       return;
     }
 
-    const filePath = findFileUnder(cat.path, file);
-    if (!filePath) {
+    const filePath = path.resolve(cat.path, subPath);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       res.status(404).send('ファイルが見つかりません');
+      return;
+    }
+    if (!isInsideRoot(filePath, cat.path)) {
+      res.status(400).send('不正なファイルパスです');
       return;
     }
     res.type('html').sendFile(filePath);
@@ -368,7 +416,7 @@ export function startServer(config: VibeboardConfig): void {
     const mtime = fs.statSync(ec.path).mtimeMs;
     const title = extractMdTitle(raw, name.replace(/\.md$/, ''));
     const md = raw.replace(/^---[\s\S]*?---\n*/, '');
-    const html = marked(md) as string;
+    const html = rewriteRelativeAssetUrls(marked(md) as string, ec.path, config.root);
     res.json({ success: true, data: { title, html, mtime }, error: null });
   });
 
@@ -440,6 +488,22 @@ export function startServer(config: VibeboardConfig): void {
   app.get(['/', '/index.html'], (_req: Request, res: Response) => {
     res.type('html').send(renderIndexHtml());
   });
+
+  // プロジェクトルートの静的ファイルを /files プレフィックスで配信
+  //   - マークダウン内の <img src="../foo.png"> のような相対パス画像を vibeboard 上で表示するため
+  //   - dotfiles ('.env' / '.git/' 等) は 403。node_modules 配下も明示的に弾く
+  //   - host デフォルトは 127.0.0.1 で外部公開していない前提
+  app.use('/files', (req: Request, res: Response, next) => {
+    const decoded = (() => {
+      try { return decodeURIComponent(req.path); } catch { return req.path; }
+    })();
+    if (/(^|\/)node_modules(\/|$)/.test(decoded)) {
+      res.status(403).type('text').send('forbidden');
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    next();
+  }, express.static(config.root, { dotfiles: 'deny', fallthrough: true, index: false }));
 
   // 静的配信
   app.use(express.static(webDir));

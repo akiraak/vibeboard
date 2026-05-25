@@ -312,7 +312,7 @@ async function renderMarkdown(category, filePath) {
   contentArea.innerHTML = '<div class="loading-text">読み込み中...</div>';
   const filename = filePath.split('/').pop();
   try {
-    const data = await fetchJson(`/api/docs/${category}/${encodeURIComponent(filename)}`);
+    const data = await fetchJson(`/api/docs/${encodeURIComponent(category)}/${encodePath(filePath)}`);
     pageTitle.textContent = data.title;
     topbarSub.textContent = `${category}/${filePath}`;
     contentArea.innerHTML = '';
@@ -908,7 +908,7 @@ function renderDesign(category, filePath) {
   toolbar.className = 'design-frame-toolbar';
   const left = document.createElement('span');
   left.textContent = filePath;
-  const designUrl = `/api/design/${encodeURIComponent(category)}/${encodeURIComponent(filename)}`;
+  const designUrl = `/api/design/${encodeURIComponent(category)}/${encodePath(filePath)}`;
   const right = document.createElement('a');
   right.className = 'design-frame-open';
   right.href = designUrl;
