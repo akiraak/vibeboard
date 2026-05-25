@@ -351,6 +351,7 @@ async function renderMarkdown(category, filePath) {
     contentArea.appendChild(layout);
     buildDocToc(div, toc);
     renderMermaidIn(div);
+    injectCopyButtons(div);
   } catch (err) {
     showError(err.message);
   }
@@ -643,6 +644,7 @@ async function renderTodoPreviewBody() {
     div.innerHTML = data.html;
     body.appendChild(div);
     renderMermaidIn(div);
+    injectCopyButtons(div);
   } catch (err) {
     body.innerHTML = '';
     const div = document.createElement('div');
@@ -700,6 +702,7 @@ async function refetchTodoFile() {
         div.innerHTML = data.html;
         body.appendChild(div);
         renderMermaidIn(div);
+        injectCopyButtons(div);
       }
       if (typeof data.mtime === 'number') todoState.mtime = data.mtime;
     } else {
@@ -872,6 +875,33 @@ function renderMermaidIn(root) {
   } catch {
     /* noop */
   }
+}
+
+// 各 <pre> の右上にコピー用ボタンを差し込む。冪等。
+// mermaid 変換後 (<pre> が <div.mermaid> に置換された後) に呼ぶ前提。
+function injectCopyButtons(root) {
+  if (!root) return;
+  root.querySelectorAll('pre').forEach((pre) => {
+    if (pre.querySelector(':scope > .copy-btn')) return;
+    const code = pre.querySelector('code');
+    if (!code) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = 'copy';
+    btn.setAttribute('aria-label', 'コードをコピー');
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(code.innerText);
+        btn.textContent = '✓ copied';
+        setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+      } catch {
+        btn.textContent = 'failed';
+        setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+      }
+    });
+    pre.appendChild(btn);
+  });
 }
 
 function showToast(message, durationMs = 2000) {
@@ -1193,6 +1223,7 @@ async function refetchPreviewForExternalChange() {
     div.innerHTML = data.html;
     body.appendChild(div);
     renderMermaidIn(div);
+    injectCopyButtons(div);
     flashExternalUpdateBadge();
   } catch {
     // ignore

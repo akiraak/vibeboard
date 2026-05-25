@@ -498,6 +498,7 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   border-radius: 4px;
 }
 .md-content pre {
+  position: relative;
   background: var(--pre-bg);
   color: var(--pre-text);
   padding: 14px 16px;
@@ -510,6 +511,29 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   background: none;
   color: inherit;
   padding: 0;
+}
+.md-content pre > .copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border: 1px solid rgba(201, 209, 217, 0.3);
+  background: rgba(13, 17, 23, 0.75);
+  color: var(--pre-text);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.md-content pre:hover > .copy-btn,
+.md-content pre > .copy-btn:focus-visible {
+  opacity: 1;
+}
+.md-content pre > .copy-btn:hover {
+  background: rgba(13, 17, 23, 0.95);
 }
 .md-content div.mermaid {
   text-align: center;
