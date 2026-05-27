@@ -187,6 +187,59 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   }
 }
 
+.sidebar-sort {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 8px 6px;
+  background: var(--side-bg);
+  border-bottom: 1px solid var(--side-border);
+}
+
+.sidebar-sort[hidden] {
+  display: none;
+}
+
+.sidebar-sort-group {
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-sort-btn {
+  flex: 1;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-sub);
+  background: transparent;
+  border: 1px solid var(--side-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.sidebar-sort-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.sidebar-sort-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.sidebar-sort-btn.active:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sidebar-sort-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .sidebar-nav {
   padding: 12px 8px 24px;
 }

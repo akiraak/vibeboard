@@ -23,8 +23,16 @@ const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name)];
 const STORAGE_CATEGORY = 'vibeboard.activeCategory';
 const STORAGE_EXPANDED = 'vibeboard.expanded';
 const STORAGE_SIDEBAR_COLLAPSED = 'vibeboard.sidebarCollapsed';
+const STORAGE_SORT = 'vibeboard.sort';
+
+// ソート状態: { key: 'mtime'|'name', mtimeDir: 'asc'|'desc', nameDir: 'asc'|'desc' }
+// 各キーの方向は独立に記憶する（キー切替時に直前の向きを復元）
+const SORT_KEYS = ['mtime', 'name'];
+const SORT_DIRS = ['asc', 'desc'];
+const DEFAULT_SORT_STATE = { key: 'mtime', mtimeDir: 'desc', nameDir: 'asc' };
 
 const sidebarNav = document.getElementById('sidebar-nav');
+const sidebarSort = document.getElementById('sidebar-sort');
 const contentArea = document.getElementById('content-area');
 const pageTitle = document.getElementById('page-title');
 const topbarSub = document.getElementById('topbar-sub');
@@ -34,6 +42,8 @@ let docsTree = Object.fromEntries(CATEGORY_DEFS.map(c => [c.name, { files: [], d
 // デフォルトは最初のドキュメントカテゴリ（無ければ編集タブ）
 let activeCategory = CATEGORY_DEFS.length > 0 ? CATEGORY_DEFS[0].name : EDITABLE_TAB;
 let expanded = {};
+// カテゴリごとのソート設定（'mtime-desc' | 'name-asc'）。loadPersisted で復元する
+let sortByCategory = {};
 
 // TODO ビューの状態（renderTodoView で更新）
 const todoState = {
@@ -87,6 +97,30 @@ function loadPersisted() {
   } catch {
     expanded = {};
   }
+  try {
+    const raw = localStorage.getItem(STORAGE_SORT);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object') {
+      for (const [k, v] of Object.entries(parsed)) {
+        const normalized = normalizeSortState(v);
+        if (normalized) sortByCategory[k] = normalized;
+      }
+    }
+  } catch {
+    sortByCategory = {};
+  }
+}
+
+// 任意入力（旧フォーマット文字列含む）を新フォーマットに正規化。不正なら null
+function normalizeSortState(v) {
+  if (!v) return null;
+  if (typeof v === 'object') {
+    const key = SORT_KEYS.includes(v.key) ? v.key : DEFAULT_SORT_STATE.key;
+    const mtimeDir = SORT_DIRS.includes(v.mtimeDir) ? v.mtimeDir : DEFAULT_SORT_STATE.mtimeDir;
+    const nameDir = SORT_DIRS.includes(v.nameDir) ? v.nameDir : DEFAULT_SORT_STATE.nameDir;
+    return { key, mtimeDir, nameDir };
+  }
+  return null;
 }
 
 function saveActiveCategory() {
@@ -95,6 +129,18 @@ function saveActiveCategory() {
 
 function saveExpanded() {
   localStorage.setItem(STORAGE_EXPANDED, JSON.stringify(expanded));
+}
+
+function saveSortByCategory() {
+  localStorage.setItem(STORAGE_SORT, JSON.stringify(sortByCategory));
+}
+
+function getSortState(category) {
+  return sortByCategory[category] || { ...DEFAULT_SORT_STATE };
+}
+
+function getDirForKey(state, key) {
+  return key === 'name' ? state.nameDir : state.mtimeDir;
 }
 
 async function fetchJson(url) {
@@ -112,13 +158,20 @@ function decodePath(p) {
   return p.split('/').map(decodeURIComponent).join('/');
 }
 
-// ディレクトリとファイルを mtime 降順（新しい順）で 1 列に並べる
-function mergeByMtime(dirs, files) {
+// ディレクトリとファイルを 1 列にマージし、state.key / 対応する方向でソートする
+function mergeAndSort(dirs, files, state) {
   const items = [
-    ...dirs.map(d => ({ kind: 'dir', data: d, mtime: d.mtime || 0 })),
-    ...files.map(f => ({ kind: 'file', data: f, mtime: f.mtime || 0 })),
+    ...dirs.map(d => ({ kind: 'dir', data: d })),
+    ...files.map(f => ({ kind: 'file', data: f })),
   ];
-  items.sort((a, b) => b.mtime - a.mtime);
+  const dir = getDirForKey(state, state.key);
+  const cmpAsc = state.key === 'name'
+    ? (a, b) => a.data.name.localeCompare(b.data.name, 'ja')
+    : (a, b) => (a.data.mtime || 0) - (b.data.mtime || 0);
+  items.sort((a, b) => {
+    const v = cmpAsc(a, b);
+    return dir === 'desc' ? -v : v;
+  });
   return items;
 }
 
@@ -200,7 +253,8 @@ function renderDir(category, dir, parentPath, depth) {
   if (isExpanded) {
     const children = document.createElement('div');
     children.className = 'nav-dir-children';
-    for (const item of mergeByMtime(dir.dirs, dir.files)) {
+    const sortState = getSortState(category);
+    for (const item of mergeAndSort(dir.dirs, dir.files, sortState)) {
       if (item.kind === 'dir') {
         children.appendChild(renderDir(category, item.data, dirPath, depth + 1));
       } else {
@@ -239,7 +293,65 @@ function renderTodoSidebar() {
   refreshSidebarConflictBadge();
 }
 
+// サイドバー上端のソート切替トグル。
+// 通常カテゴリのときのみ表示し、TODO タブでは hidden にする。
+// アクティブキーには ↑/↓ を併記。アクティブを再クリックすると方向を反転、
+// 非アクティブをクリックするとそのキーの記憶済み方向で切替。
+function renderSortControl() {
+  if (!sidebarSort) return;
+  if (activeCategory === EDITABLE_TAB) {
+    sidebarSort.hidden = true;
+    sidebarSort.innerHTML = '';
+    return;
+  }
+  sidebarSort.hidden = false;
+  sidebarSort.innerHTML = '';
+
+  const state = getSortState(activeCategory);
+  const options = [
+    { key: 'mtime', label: '更新日' },
+    { key: 'name', label: '名前' },
+  ];
+  const group = document.createElement('div');
+  group.className = 'sidebar-sort-group';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', '並び順');
+  for (const opt of options) {
+    const isActive = state.key === opt.key;
+    const dir = getDirForKey(state, opt.key);
+    const arrow = isActive ? (dir === 'desc' ? ' ↓' : ' ↑') : '';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sidebar-sort-btn' + (isActive ? ' active' : '');
+    btn.textContent = opt.label + arrow;
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    btn.title = isActive
+      ? (dir === 'desc' ? 'クリックで昇順に切替' : 'クリックで降順に切替')
+      : `${opt.label}順に切替`;
+    btn.addEventListener('click', () => {
+      const cur = getSortState(activeCategory);
+      const next = { ...cur };
+      if (cur.key === opt.key) {
+        // アクティブ再クリック → 方向反転
+        const flipped = getDirForKey(cur, opt.key) === 'desc' ? 'asc' : 'desc';
+        if (opt.key === 'name') next.nameDir = flipped;
+        else next.mtimeDir = flipped;
+      } else {
+        // 非アクティブクリック → キー切替（方向はそのキーの記憶を維持）
+        next.key = opt.key;
+      }
+      sortByCategory[activeCategory] = next;
+      saveSortByCategory();
+      renderSidebar();
+    });
+    group.appendChild(btn);
+  }
+  sidebarSort.appendChild(group);
+}
+
 function renderSidebar() {
+  renderSortControl();
+
   if (activeCategory === EDITABLE_TAB) {
     renderTodoSidebar();
     return;
@@ -256,12 +368,13 @@ function renderSidebar() {
     return;
   }
 
-  // archive ディレクトリはツリーの一番下に出す（それ以外は mtime 降順で混ぜて並べる）
+  // archive ディレクトリはツリーの一番下に出す（それ以外は選択ソートで混ぜて並べる）
   const regularDirs = tree.dirs.filter(d => d.name !== 'archive');
   const archiveDirs = tree.dirs.filter(d => d.name === 'archive');
 
+  const sortState = getSortState(activeCategory);
   const frag = document.createDocumentFragment();
-  for (const item of mergeByMtime(regularDirs, tree.files)) {
+  for (const item of mergeAndSort(regularDirs, tree.files, sortState)) {
     if (item.kind === 'dir') {
       frag.appendChild(renderDir(activeCategory, item.data, '', 0));
     } else {
