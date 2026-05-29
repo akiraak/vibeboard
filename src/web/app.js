@@ -158,6 +158,60 @@ function decodePath(p) {
   return p.split('/').map(decodeURIComponent).join('/');
 }
 
+// 本文 (.md-content) 内の相対 .md / .html リンクのクリックを SPA の hash 遷移へ変換する。
+// 元の Markdown は無編集のまま（GitHub / VSCode プレビューの相対リンクを壊さない）。
+// 画像・音声等のメディアはサーバ側で /files に書き換え済みなのでここでは扱わない。
+// カテゴリのルートは docs/<category> を前提（vibeboard 既定構成）。クロスカテゴリの
+// 相対リンク（例 plans → ../../specs/...）も docs ルートからの正規化で解決する。
+// .md#section の section アンカーは SPA 未対応のため落として doc 先頭へ遷移する。
+function resolveDocLinkHash(href) {
+  if (!href) return null;
+  // 絶対 URL / data / mailto / tel / ページ内アンカー / 既に / 始まりは対象外
+  if (/^(https?:)?\/\/|^data:|^mailto:|^tel:|^#|^\//i.test(href)) return null;
+  // フラグメント / クエリを除去してパス本体を取り出す
+  let pathPart = href;
+  const hashIdx = href.indexOf('#');
+  const qIdx = href.indexOf('?');
+  let cut = -1;
+  if (hashIdx !== -1) cut = hashIdx;
+  if (qIdx !== -1 && (cut === -1 || qIdx < cut)) cut = qIdx;
+  if (cut !== -1) pathPart = href.slice(0, cut);
+  if (!pathPart || !/\.(md|html)$/i.test(pathPart)) return null;
+
+  const cur = parseHash();
+  if (!cur || cur.category === EDITABLE_TAB) return null;
+
+  // 現在ドキュメントの docs ルート相対パスから dirname を取り、相対解決する
+  const curFull = `docs/${cur.category}/${cur.filePath}`;
+  const segs = curFull.split('/').slice(0, -1); // dirname
+  for (const part of pathPart.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { if (segs.length) segs.pop(); continue; }
+    segs.push(part);
+  }
+  const resolved = segs.join('/');
+  const m = resolved.match(/^docs\/([^/]+)\/(.+)$/);
+  if (!m) return null;
+  const newCat = m[1];
+  const newPath = m[2];
+  if (!CATEGORIES.includes(newCat) || newCat === EDITABLE_TAB) return null;
+  return `#${newCat}/${encodePath(newPath)}`;
+}
+
+// contentArea（安定コンテナ。子は描画ごとに差し替え）に委譲クリックを 1 度だけ張る。
+function setupDocLinkInterception() {
+  contentArea.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest('a');
+    if (!a || !contentArea.contains(a)) return;
+    const targetHash = resolveDocLinkHash(a.getAttribute('href'));
+    if (!targetHash) return;
+    e.preventDefault();
+    if (location.hash === targetHash) handleRoute();
+    else location.hash = targetHash;
+  });
+}
+
 // ディレクトリとファイルを 1 列にマージし、state.key / 対応する方向でソートする
 function mergeAndSort(dirs, files, state) {
   const items = [
@@ -1582,6 +1636,7 @@ async function init() {
   setupTabs();
   setupBeforeUnload();
   setupRefreshShortcut();
+  setupDocLinkInterception();
   renderTabs();
   updateSseIndicator();
   connectEventSource();
