@@ -13,6 +13,8 @@ interface TreeFile {
 
 interface TreeDir {
   name: string;
+  // ディレクトリ内の README.md のタイトル（無ければ null）。サイドバーで dir 名に併記する
+  title: string | null;
   files: TreeFile[];
   dirs: TreeDir[];
   mtime: number;
@@ -126,7 +128,14 @@ function listTree(absDir: string, exts: string[], relPrefix: string = ''): Tree 
           ...sub.dirs.map(d => d.mtime),
         ];
         const mtime = Math.max(selfMtime, ...childMtimes);
-        dirs.push({ name: entry.name, files: sub.files, dirs: sub.dirs, mtime });
+        // ディレクトリ内に README.md があればそのタイトルを取り出して dir 名に併記する
+        const readmeAbs = path.join(abs, 'README.md');
+        let title: string | null = null;
+        if (fs.existsSync(readmeAbs) && fs.statSync(readmeAbs).isFile()) {
+          const extracted = extractTitle(readmeAbs, '');
+          if (extracted) title = extracted;
+        }
+        dirs.push({ name: entry.name, title, files: sub.files, dirs: sub.dirs, mtime });
       }
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name);

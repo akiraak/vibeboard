@@ -280,6 +280,14 @@ function renderDir(category, dir, parentPath, depth) {
   name.textContent = dir.name;
   header.appendChild(name);
 
+  // ディレクトリ内 README.md のタイトルがあれば dir 名の後ろに併記する
+  if (dir.title && dir.title !== dir.name) {
+    const title = document.createElement('span');
+    title.className = 'nav-dir-title';
+    title.textContent = dir.title;
+    header.appendChild(title);
+  }
+
   // archive=true のカテゴリ直下のディレクトリ（archive 本体は除く）にアーカイブボタンを付ける
   const catDef = CATEGORY_BY_NAME.get(category);
   if (catDef && catDef.archive && depth === 0 && dir.name !== 'archive') {
