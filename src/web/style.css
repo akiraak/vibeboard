@@ -302,30 +302,39 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   background: var(--hover);
 }
 
+.nav-dir {
+  align-items: flex-start;
+}
+
 .nav-dir-toggle {
   display: inline-block;
   width: 14px;
   font-size: 10px;
   color: var(--text-sub);
   margin-right: 6px;
+  margin-top: 2px;
   flex-shrink: 0;
+}
+
+/* タイトル（1 行目）とディレクトリ名（2 行目）を縦積みにして折り返す */
+.nav-dir-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
 }
 
 .nav-dir-name {
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-/* ディレクトリ内 README.md のタイトル（dir 名の後ろに薄字で併記） */
-.nav-dir-title {
-  margin-left: 8px;
-  color: var(--text-sub);
   font-weight: 400;
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+  color: var(--text-sub);
+  overflow-wrap: anywhere;
+}
+
+/* ディレクトリ内 README.md のタイトル（1 行目に表示） */
+.nav-dir-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .nav-dir-archive {

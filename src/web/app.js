@@ -275,18 +275,24 @@ function renderDir(category, dir, parentPath, depth) {
   toggle.textContent = isExpanded ? '▼' : '▶';
   header.appendChild(toggle);
 
-  const name = document.createElement('span');
-  name.className = 'nav-dir-name';
-  name.textContent = dir.name;
-  header.appendChild(name);
+  // タイトル（README.md）を 1 行目、ディレクトリ名を 2 行目に縦積みで表示する。
+  // 見切れ防止のため横並びにはせず折り返す。
+  const labelWrap = document.createElement('span');
+  labelWrap.className = 'nav-dir-label';
 
-  // ディレクトリ内 README.md のタイトルがあれば dir 名の後ろに併記する
   if (dir.title && dir.title !== dir.name) {
     const title = document.createElement('span');
     title.className = 'nav-dir-title';
     title.textContent = dir.title;
-    header.appendChild(title);
+    labelWrap.appendChild(title);
   }
+
+  const name = document.createElement('span');
+  name.className = 'nav-dir-name';
+  name.textContent = dir.name;
+  labelWrap.appendChild(name);
+
+  header.appendChild(labelWrap);
 
   // archive=true のカテゴリ直下のディレクトリ（archive 本体は除く）にアーカイブボタンを付ける
   const catDef = CATEGORY_BY_NAME.get(category);
