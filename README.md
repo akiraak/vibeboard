@@ -8,7 +8,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ <project>             TODO  Plans  Specs                     │
+│ <project>             Root  Plans  Specs                     │
 ├──────────────┬───────────────────────────────────────────────┤
 │ docs/plans/  │ # TODO                                        │
 │  ├ foo.md    │                                               │
@@ -21,7 +21,7 @@
 ## できること
 
 - `docs/plans/` ・ `docs/specs/` 配下の Markdown / HTML をツリーで一覧・閲覧
-- ルート直下の `TODO.md` ・ `DONE.md` をプレビュー表示しつつ編集
+- ルート直下の `TODO.md` ・ `DONE.md` ・ `CLAUDE.md` ・ `README.md` をプレビュー表示しつつ編集
   - mtime ベースの楽観ロック付き。外部で先に更新されていた場合は 409 を返し、
     リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映
@@ -168,7 +168,7 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 
 `<root>/vibeboard.config.json` を置くと、UI のタブ・カテゴリ・編集対象ファイルを
 プロジェクトごとにカスタマイズできる。`--config <path>` で別パスを指定することも可能。
-ファイルが無ければデフォルト（`plans` / `specs` / `TODO.md` / `DONE.md`）で起動する。
+ファイルが無ければデフォルト（`plans` / `specs` / `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md`）で起動する。
 
 ### スキーマ
 
@@ -192,14 +192,16 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
     { "name": "specs", "label": "Specs", "path": "docs/specs" }
   ],
 
-  // 編集対象（TODO 系）タブ。タブのスラッグは固定で 'todo'
-  // 省略時は { label: 'TODO', files: [TODO.md, DONE.md] }
+  // 編集対象（Root）タブ。タブのスラッグは固定で 'todo'
+  // 省略時は { label: 'Root', files: [TODO.md, DONE.md, CLAUDE.md, README.md] }
   "editable": {
-    "label": "TODO",
+    "label": "Root",
     "files": [
       // 文字列だけならファイル名そのまま。オブジェクトで label / path をカスタムできる
       "TODO.md",
-      { "name": "DONE.md", "label": "DONE", "path": "DONE.md" }
+      { "name": "DONE.md", "label": "DONE", "path": "DONE.md" },
+      "CLAUDE.md",
+      "README.md"
     ]
   }
 }
@@ -254,9 +256,9 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 node vibeboard/dist/cli.js --root .
 ```
 
-`http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md` を閲覧・編集できる。
+`http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md`・`CLAUDE.md`・`README.md` を閲覧・編集できる。
 
-- `TODO` タブで `TODO.md` / `DONE.md` をプレビュー表示・編集できる
+- `Root` タブで `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` をプレビュー表示・編集できる
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
 - ローカル開発専用（本番管理画面とは独立）

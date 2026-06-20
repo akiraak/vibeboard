@@ -42,10 +42,12 @@ const DEFAULT_CATEGORIES: CategoryConfig[] = [
 ];
 
 const DEFAULT_EDITABLE: EditableConfig = {
-  label: 'TODO',
+  label: 'Root',
   files: [
     { name: 'TODO.md', label: 'TODO', path: 'TODO.md' },
     { name: 'DONE.md', label: 'DONE', path: 'DONE.md' },
+    { name: 'CLAUDE.md', label: 'CLAUDE', path: 'CLAUDE.md' },
+    { name: 'README.md', label: 'README', path: 'README.md' },
   ],
 };
 

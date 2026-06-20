@@ -12,10 +12,10 @@ const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categorie
       { name: 'specs', label: 'Specs', archive: false },
     ];
 const CATEGORY_BY_NAME = new Map(CATEGORY_DEFS.map(c => [c.name, c]));
-const EDITABLE_LABEL = (VB_CONFIG.editable && VB_CONFIG.editable.label) || 'TODO';
+const EDITABLE_LABEL = (VB_CONFIG.editable && VB_CONFIG.editable.label) || 'Root';
 const EDITABLE_FILES = (VB_CONFIG.editable && Array.isArray(VB_CONFIG.editable.files) && VB_CONFIG.editable.files.length > 0)
   ? VB_CONFIG.editable.files
-  : [{ name: 'TODO.md', label: 'TODO' }, { name: 'DONE.md', label: 'DONE' }];
+  : [{ name: 'TODO.md', label: 'TODO' }, { name: 'DONE.md', label: 'DONE' }, { name: 'CLAUDE.md', label: 'CLAUDE' }, { name: 'README.md', label: 'README' }];
 const EDITABLE_NAMES = EDITABLE_FILES.map(f => f.name);
 const EDITABLE_BY_NAME = new Map(EDITABLE_FILES.map(f => [f.name, f]));
 const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name)];
