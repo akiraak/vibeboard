@@ -203,7 +203,19 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
       "CLAUDE.md",
       "README.md"
     ]
-  }
+  },
+
+  // 外部 HTTP プラグインを iframe タブとして差し込む（省略時は無し）。
+  // 各エントリは別プロセスのプラグインを指し、vibeboard は中身をプロキシせず
+  // baseUrl をクライアントへ渡してブラウザが直接 fetch する（loopback / CORS 前提）。
+  // 契約は後述の「customTabs（プラグインタブ）」を参照。topbar では他タブの左側に並ぶ。
+  "customTabs": [
+    {
+      "name": "sample",                   // 必須。URL/ハッシュのスラッグ。英数と '-'。他タブと衝突不可
+      "label": "Sample",                  // タブ表示名。省略時は name
+      "baseUrl": "http://127.0.0.1:8181"  // 必須。プラグインの http/https ベース URL（末尾 / は正規化で除去）
+    }
+  ]
 }
 ```
 
@@ -236,8 +248,54 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 - `editable.files[].name` が `.md` で終わらない / 重複 / パス区切り文字を含む
 - `editable.files[].path` が root の外を指している
 - `categories` または `editable.files` を空配列にしている（省略してデフォルトに戻す）
+- `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・categories）と衝突 / 重複
+- `customTabs[].baseUrl` が空 / URL として不正 / `http`・`https` 以外 / `?` や `#` を含む
 
 優先順位は `CLI 引数 > 環境変数 > vibeboard.config.json > デフォルト`。
+
+## customTabs（プラグインタブ）
+
+`customTabs` を設定すると、外部の HTTP プラグインを vibeboard の iframe タブとして差し込める。
+vibeboard はプラグインの中身をプロキシせず、`baseUrl` をクライアントへ渡してブラウザが直接
+fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-custom-tab/`](sample-custom-tab/) を参照。
+
+### プラグインが実装する 3 エンドポイント
+
+| エンドポイント | 役割 |
+|---|---|
+| `GET /api/sidebar` | `{ "items": [...] }` を返す。左サイドバーの項目一覧 |
+| `GET /view?item=<id>` | item に対応する HTML を返す。右ペインの iframe に表示される |
+| `GET /api/watch` | SSE。`item-changed` / `sidebar` イベントで iframe・サイドバーを自動更新 |
+
+すべて CORS を許可すること（`Access-Control-Allow-Origin`）。`/view` の HTML は iframe 埋め込みのため
+`Content-Security-Policy: frame-ancestors http://127.0.0.1:*`（または vibeboard のオリジン）を返す。
+
+### サイドバー項目スキーマ（`/api/sidebar` の `items[]`）
+
+```jsonc
+{
+  "id":    "overview",      // 必須。/view?item= とハッシュ #<tab>/<id> に使う
+  "label": "Overview",      // 必須。表示名
+  "sub":   "サブ情報",       // 任意。ラベル下の小さな補助テキスト
+  "group": "dashboard",     // 任意。連続する同 group は見出しでまとめられる
+  "badge": "●"              // 任意。右端のバッジ
+}
+```
+
+### SSE イベント（`/api/watch`）
+
+- `event: item-changed` / `data: { "id": "<itemId>", "reload": true }`
+  表示中 item がこの id なら iframe を再ロードする。`"reload": false` を付けると親は iframe に触れず、
+  プラグインが iframe 内の inline script で自前更新する想定（ちらつき・スクロール位置リセットを避けたい場合）。
+  `reload` 省略時は `true` 扱い。
+- `event: sidebar` — サイドバーを再フェッチして描き直す。
+
+### 挙動
+
+- **並び順**: customTabs は topbar で他タブ（Root / categories）の**左側**に、配列順で並ぶ。
+- **自動選択**: item を指定せずタブを開くと、サイドバー先頭の項目へ自動遷移する（空ペインを避ける）。
+- **iframe からの遷移**: iframe 内から親の別 item へ移りたいときは
+  `parent.postMessage({ type: 'vb-nav', hash: '<tab>/<id>' }, '*')` を送ると vibeboard がハッシュを書き換える。
 
 ## 親プロジェクトの `CLAUDE.md` に追記すべきスニペット
 

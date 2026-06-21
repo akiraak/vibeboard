@@ -19,6 +19,12 @@ export interface EditableConfig {
   files: EditableFileConfig[];
 }
 
+export interface CustomTabConfig {
+  name: string;    // URL セグメント / ハッシュキー (例: 'sample')
+  label: string;   // タブ表示名 (例: 'Sample')
+  baseUrl: string; // プラグインの HTTP ベース URL (末尾スラッシュなしに正規化)
+}
+
 export interface VibeboardConfig {
   root: string;
   port: number;
@@ -26,6 +32,7 @@ export interface VibeboardConfig {
   title: string;
   categories: CategoryConfig[];
   editable: EditableConfig;
+  customTabs: CustomTabConfig[];
 }
 
 interface ParsedArgs {
@@ -53,6 +60,7 @@ const DEFAULT_EDITABLE: EditableConfig = {
 
 const RESERVED_CATEGORY_NAMES = new Set(['todo']);
 const FORBIDDEN_PATH_CHARS = /[\/\\]/;
+const CUSTOM_TAB_NAME_RE = /^[a-z0-9][a-z0-9-]*$/i;
 
 function parseArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = { rest: [] };
@@ -106,6 +114,7 @@ interface RawConfigFile {
   port?: unknown;
   categories?: unknown;
   editable?: unknown;
+  customTabs?: unknown;
 }
 
 function readConfigFile(root: string, explicitPath: string | undefined): {
@@ -254,6 +263,62 @@ function normalizeEditable(raw: unknown, root: string): EditableConfig {
   return { label, files };
 }
 
+function normalizeBaseUrl(raw: string, label: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${label} は URL として解釈できません: ${raw}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${label} は http または https のみ許可されます: ${raw}`);
+  }
+  if (url.search || url.hash) {
+    throw new Error(`${label} に ? や # は含められません: ${raw}`);
+  }
+  // 末尾スラッシュを取り除いて正規化（pathname が '/' のみの場合は空文字に）
+  let pathname = url.pathname;
+  if (pathname.endsWith('/')) pathname = pathname.replace(/\/+$/, '');
+  return `${url.protocol}//${url.host}${pathname}`;
+}
+
+function normalizeCustomTabs(
+  raw: unknown,
+  reservedNames: Set<string>,
+): CustomTabConfig[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error('customTabs は配列である必要があります');
+  }
+  const seen = new Set<string>();
+  const out: CustomTabConfig[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`customTabs[${i}] はオブジェクトである必要があります`);
+    }
+    const e = entry as Record<string, unknown>;
+    const name = typeof e.name === 'string' ? e.name.trim() : '';
+    if (!name) throw new Error(`customTabs[${i}].name は必須です`);
+    if (!CUSTOM_TAB_NAME_RE.test(name)) {
+      throw new Error(`customTabs[${i}].name に使えない文字が含まれます: ${name}`);
+    }
+    if (reservedNames.has(name)) {
+      throw new Error(`customTabs[${i}].name は他のタブと衝突しています: ${name}`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`customTabs[${i}].name が重複しています: ${name}`);
+    }
+    seen.add(name);
+    const label = typeof e.label === 'string' && e.label.trim() ? e.label.trim() : name;
+    const rawBaseUrl = typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '';
+    if (!rawBaseUrl) throw new Error(`customTabs[${i}].baseUrl は必須です`);
+    const baseUrl = normalizeBaseUrl(rawBaseUrl, `customTabs[${i}].baseUrl`);
+    out.push({ name, label, baseUrl });
+  }
+  return out;
+}
+
 export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: string[] } {
   const parsed = parseArgs(argv);
 
@@ -290,6 +355,9 @@ export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: 
 
   const categories = normalizeCategories(raw.categories, root);
   const editable = normalizeEditable(raw.editable, root);
+  // categories の name と 'todo' を予約名としてまとめて customTabs に渡す
+  const reservedForCustomTabs = new Set<string>(['todo', ...categories.map(c => c.name)]);
+  const customTabs = normalizeCustomTabs(raw.customTabs, reservedForCustomTabs);
 
   return {
     config: {
@@ -299,6 +367,7 @@ export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: 
       title,
       categories,
       editable,
+      customTabs,
     },
     rest: parsed.rest,
   };

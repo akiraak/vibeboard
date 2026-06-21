@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
-import type { CategoryConfig, EditableFileConfig, VibeboardConfig } from './config';
+import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
 
 interface TreeFile {
   name: string;
@@ -483,11 +483,19 @@ export function startServer(config: VibeboardConfig): void {
     label: config.editable.label,
     files: config.editable.files.map(f => ({ name: f.name, label: f.label })),
   };
+  // customTabs は baseUrl ごとクライアントへ流す（クライアントが直接 fetch するため）。
+  // baseUrl はループバック前提なので秘匿対象ではない。
+  const clientCustomTabs: CustomTabConfig[] = config.customTabs.map(t => ({
+    name: t.name,
+    label: t.label,
+    baseUrl: t.baseUrl,
+  }));
   const renderIndexHtml = (): string => {
     const clientConfig = JSON.stringify({
       title: config.title,
       categories: clientCategories,
       editable: clientEditable,
+      customTabs: clientCustomTabs,
     });
     return indexHtmlRaw
       .replace(/__VIBEBOARD_TITLE__/g, escapeHtml(config.title))
@@ -523,5 +531,9 @@ export function startServer(config: VibeboardConfig): void {
     console.log(`[vibeboard] title: ${config.title}`);
     console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
     console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
+    if (config.customTabs.length > 0) {
+      const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');
+      console.log(`[vibeboard] customTabs: ${cts}`);
+    }
   });
 }

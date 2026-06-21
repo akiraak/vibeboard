@@ -18,7 +18,10 @@ const EDITABLE_FILES = (VB_CONFIG.editable && Array.isArray(VB_CONFIG.editable.f
   : [{ name: 'TODO.md', label: 'TODO' }, { name: 'DONE.md', label: 'DONE' }, { name: 'CLAUDE.md', label: 'CLAUDE' }, { name: 'README.md', label: 'README' }];
 const EDITABLE_NAMES = EDITABLE_FILES.map(f => f.name);
 const EDITABLE_BY_NAME = new Map(EDITABLE_FILES.map(f => [f.name, f]));
-const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name)];
+// customTabs はサーバ側で正規化済み（name/label/baseUrl）。未指定なら空配列。
+const CUSTOM_TABS = Array.isArray(VB_CONFIG.customTabs) ? VB_CONFIG.customTabs : [];
+const CUSTOM_TAB_BY_NAME = new Map(CUSTOM_TABS.map(t => [t.name, t]));
+const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name), ...CUSTOM_TABS.map(t => t.name)];
 
 const STORAGE_CATEGORY = 'vibeboard.activeCategory';
 const STORAGE_EXPANDED = 'vibeboard.expanded';
@@ -59,6 +62,19 @@ const todoState = {
 const sseState = {
   source: null,
   connected: false,
+};
+
+// customTabs 用の状態。サイドバー結果をキャッシュ / SSE を 1 タブだけアクティブに保つ。
+const customTabState = {
+  // name -> { items: array, error: string | null }
+  cache: new Map(),
+  // 現在開いているプラグイン SSE。タブ切替時に必ず close する
+  source: null,
+  sourceName: null,
+  // 現在右ペインに表示している iframe（item-changed で reload するため）
+  iframe: null,
+  iframeName: null,
+  iframeItemId: null,
 };
 
 // 現在表示中ドキュメントの TOC アクティブ追従用 IntersectionObserver。
@@ -422,6 +438,11 @@ function renderSidebar() {
 
   if (activeCategory === EDITABLE_TAB) {
     renderTodoSidebar();
+    return;
+  }
+
+  if (CUSTOM_TAB_BY_NAME.has(activeCategory)) {
+    renderCustomTabSidebar(activeCategory);
     return;
   }
 
@@ -1197,6 +1218,13 @@ function handleRoute() {
   if (!parsed) {
     refreshActiveHighlight();
     showEmpty();
+    // hash が無くても customTab がアクティブなら SSE は繋いでおく（サイドバー更新のため）
+    if (CUSTOM_TAB_BY_NAME.has(activeCategory)) {
+      ensureCustomTabSource(activeCategory);
+    } else {
+      disconnectCustomTabSource();
+      clearCustomTabIframe();
+    }
     return;
   }
 
@@ -1208,10 +1236,31 @@ function handleRoute() {
 
   let needSidebarRerender = false;
   if (activeCategory !== category) {
+    // 直前のカテゴリが customTab だった場合、対応する SSE をクリーンアップ
+    if (CUSTOM_TAB_BY_NAME.has(activeCategory) && activeCategory !== category) {
+      disconnectCustomTabSource();
+      clearCustomTabIframe();
+    }
     activeCategory = category;
     saveActiveCategory();
     renderTabs();
     needSidebarRerender = true;
+  }
+
+  if (CUSTOM_TAB_BY_NAME.has(category)) {
+    // customTab: filePath は item id。空文字なら未選択扱い。
+    if (needSidebarRerender) {
+      renderSidebar();
+    } else {
+      refreshActiveHighlight();
+    }
+    ensureCustomTabSource(category);
+    if (filePath) {
+      renderCustomTabView(category, filePath);
+    } else {
+      showEmpty();
+    }
+    return;
   }
 
   if (category === EDITABLE_TAB) {
@@ -1255,10 +1304,11 @@ function handleRoute() {
   }
 }
 
-// 設定された editable / categories から topbar の tab ボタンを動的に組み立てる
+// 設定された editable / categories / customTabs から topbar の tab ボタンを動的に組み立てる
 function buildTabs() {
   topbarTabs.innerHTML = '';
   const tabs = [
+    ...CUSTOM_TABS.map(t => ({ name: t.name, label: t.label })),
     { name: EDITABLE_TAB, label: EDITABLE_LABEL },
     ...CATEGORY_DEFS.map(c => ({ name: c.name, label: c.label })),
   ];
@@ -1286,6 +1336,11 @@ function setupTabs() {
         todoState.conflict = null;
         updateConflictIndicators();
       }
+      // customTab から離れる場合は SSE / iframe を破棄
+      if (CUSTOM_TAB_BY_NAME.has(activeCategory)) {
+        disconnectCustomTabSource();
+        clearCustomTabIframe();
+      }
       activeCategory = cat;
       saveActiveCategory();
       renderTabs();
@@ -1296,6 +1351,11 @@ function setupTabs() {
       }
       refreshActiveHighlight();
       showEmpty();
+
+      // customTab に入ったら SSE を確立（サイドバーは renderSidebar 内でフェッチ済み）
+      if (CUSTOM_TAB_BY_NAME.has(cat)) {
+        ensureCustomTabSource(cat);
+      }
     });
   });
 }
@@ -1612,6 +1672,197 @@ function refreshSidebarConflictBadge() {
   });
 }
 
+// === customTabs (vibeboard プラグイン) ===
+
+// プラグイン側 /api/sidebar をフェッチしてキャッシュ。失敗は error として記録する。
+async function fetchCustomTabSidebar(name) {
+  const tab = CUSTOM_TAB_BY_NAME.get(name);
+  if (!tab) return { items: [], error: 'unknown tab' };
+  try {
+    const res = await fetch(`${tab.baseUrl}/api/sidebar`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const items = Array.isArray(json && json.items) ? json.items : [];
+    const state = { items, error: null };
+    customTabState.cache.set(name, state);
+    return state;
+  } catch (err) {
+    const state = { items: [], error: `${tab.label} に接続できません: ${err && err.message ? err.message : err}` };
+    customTabState.cache.set(name, state);
+    return state;
+  }
+}
+
+async function renderCustomTabSidebar(name) {
+  sidebarNav.innerHTML = '<div class="loading-text">読み込み中...</div>';
+  const state = await fetchCustomTabSidebar(name);
+  // 描画中にユーザーが他タブへ移っていたら中断
+  if (activeCategory !== name) return;
+  sidebarNav.innerHTML = '';
+
+  if (state.error) {
+    const empty = document.createElement('div');
+    empty.className = 'error-text';
+    empty.textContent = state.error;
+    sidebarNav.appendChild(empty);
+    return;
+  }
+  if (state.items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'loading-text';
+    empty.textContent = '項目がありません';
+    sidebarNav.appendChild(empty);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  let lastGroup = null;
+  for (const it of state.items) {
+    if (!it || typeof it.id !== 'string' || typeof it.label !== 'string') continue;
+    const group = typeof it.group === 'string' ? it.group : null;
+    if (group && group !== lastGroup) {
+      const header = document.createElement('div');
+      header.className = 'nav-group-header';
+      header.textContent = group;
+      frag.appendChild(header);
+      lastGroup = group;
+    } else if (!group) {
+      lastGroup = null;
+    }
+    const a = document.createElement('a');
+    a.className = 'nav-item';
+    a.href = `#${name}/${encodeURIComponent(it.id)}`;
+    a.dataset.category = name;
+    a.dataset.path = it.id;
+    const title = document.createElement('div');
+    title.textContent = it.label;
+    a.appendChild(title);
+    if (typeof it.sub === 'string' && it.sub) {
+      const sub = document.createElement('div');
+      sub.className = 'nav-item-file';
+      sub.textContent = it.sub;
+      a.appendChild(sub);
+    }
+    if (typeof it.badge === 'string' && it.badge) {
+      const badge = document.createElement('span');
+      badge.className = 'nav-item-badge';
+      badge.textContent = it.badge;
+      a.appendChild(badge);
+    }
+    frag.appendChild(a);
+  }
+  sidebarNav.appendChild(frag);
+  refreshActiveHighlight();
+
+  // item 未指定で customTab を開いた場合は、サイドバー先頭の有効な項目に自動遷移する
+  // (タブを開いた直後に空ペインではなく最初の項目を表示するため)
+  const firstItem = state.items.find(
+    it => it && typeof it.id === 'string' && typeof it.label === 'string'
+  );
+  if (firstItem) {
+    const parsed = parseHash();
+    const alreadySelected = !!(parsed && parsed.category === name && parsed.filePath);
+    if (!alreadySelected) {
+      location.replace(`#${name}/${encodeURIComponent(firstItem.id)}`);
+    }
+  }
+}
+
+function buildCustomTabSrc(tab, itemId, bust) {
+  const t = bust ? `&_t=${Date.now()}` : '';
+  return `${tab.baseUrl}/view?item=${encodeURIComponent(itemId)}${t}`;
+}
+
+function renderCustomTabView(name, itemId) {
+  clearTocObserver();
+  const tab = CUSTOM_TAB_BY_NAME.get(name);
+  if (!tab) return;
+  pageTitle.textContent = tab.label;
+  topbarSub.textContent = itemId;
+
+  // 同じタブ・同じ id で再描画される場合は iframe を作り直さない
+  if (
+    customTabState.iframe
+    && customTabState.iframeName === name
+    && customTabState.iframeItemId === itemId
+    && customTabState.iframe.isConnected
+  ) {
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'design-frame-wrap';
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'design-frame';
+  iframe.src = buildCustomTabSrc(tab, itemId, false);
+  iframe.title = `${tab.label}: ${itemId}`;
+  wrap.appendChild(iframe);
+
+  contentArea.innerHTML = '';
+  contentArea.appendChild(wrap);
+
+  customTabState.iframe = iframe;
+  customTabState.iframeName = name;
+  customTabState.iframeItemId = itemId;
+}
+
+function clearCustomTabIframe() {
+  customTabState.iframe = null;
+  customTabState.iframeName = null;
+  customTabState.iframeItemId = null;
+}
+
+function ensureCustomTabSource(name) {
+  if (customTabState.sourceName === name && customTabState.source) return;
+  disconnectCustomTabSource();
+  const tab = CUSTOM_TAB_BY_NAME.get(name);
+  if (!tab || typeof EventSource === 'undefined') return;
+  let es;
+  try {
+    es = new EventSource(`${tab.baseUrl}/api/watch`);
+  } catch {
+    return;
+  }
+  customTabState.source = es;
+  customTabState.sourceName = name;
+
+  es.addEventListener('sidebar', () => {
+    if (activeCategory !== name) return;
+    renderCustomTabSidebar(name);
+  });
+  es.addEventListener('item-changed', (e) => {
+    if (activeCategory !== name) return;
+    let payload;
+    try { payload = JSON.parse(e.data); } catch { return; }
+    if (!payload || typeof payload.id !== 'string') return;
+    // reload === false は「プラグインが iframe 内で自己更新するので親はリロードするな」
+    // の合図。iframe 内の inline script が自前で SSE を購読して DOM 差分パッチする場合に
+    // 使う (毎回 iframe.src を触るとちらつき・アニメ/スクロール位置のリセットが起きるため)。
+    // 省略時は true 扱いで、親が該当 iframe を再ロードする。
+    if (payload.reload === false) return;
+    // 表示中の item がこの id なら iframe を reload
+    if (
+      customTabState.iframe
+      && customTabState.iframeName === name
+      && customTabState.iframeItemId === payload.id
+    ) {
+      customTabState.iframe.src = buildCustomTabSrc(tab, payload.id, true);
+    }
+  });
+  es.addEventListener('error', () => {
+    // 再接続は EventSource 任せ
+  });
+}
+
+function disconnectCustomTabSource() {
+  if (customTabState.source) {
+    try { customTabState.source.close(); } catch { /* ignore */ }
+  }
+  customTabState.source = null;
+  customTabState.sourceName = null;
+}
+
 function setupSidebarToggle() {
   const toggle = document.getElementById('sidebar-toggle');
   const mainBody = document.querySelector('.main-body');
@@ -1666,4 +1917,22 @@ async function init() {
 }
 
 window.addEventListener('hashchange', handleRoute);
+
+// customTab iframe からの遷移要求 (postMessage { type: 'vb-nav', hash }) を受け取る。
+// iframe から直接 `target="_top"` でフラグメント遷移すると iframe のオリジンで
+// URL が解決されてしまうため、postMessage 経由で vibeboard のハッシュを書き換える。
+window.addEventListener('message', (ev) => {
+  const data = ev && ev.data;
+  if (!data || typeof data !== 'object') return;
+  if (data.type !== 'vb-nav') return;
+  if (typeof data.hash !== 'string' || !data.hash) return;
+  const next = `#${data.hash}`;
+  if (location.hash === next) {
+    // 同一 hash なら hashchange が発火しないので明示的に呼ぶ
+    handleRoute();
+  } else {
+    location.hash = data.hash;
+  }
+});
+
 init();
