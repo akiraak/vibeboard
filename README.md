@@ -61,10 +61,28 @@ npx -y degit akiraak/vibeboard vibeboard   # 既存 vibeboard/ がある場合�
 cd vibeboard
 npm install                                # prepare で dist/ も生成される
 
-# 起動 (例: 親プロジェクト直下を root にして見る)
-node dist/cli.js --root ..
+# 起動 (親プロジェクト直下を root にして見る)
+./run-vibeboard.sh
 # → http://localhost:3010 を開く
 ```
+
+`run-vibeboard.sh` は初回起動時に `npm install` を実行し、`dist/cli.js` が無い場合や
+TypeScript ソースが更新されている場合は自動的にビルドする。任意の CLI 引数もそのまま渡せる。
+
+```bash
+./run-vibeboard.sh --port 3011
+```
+
+親プロジェクト直下から起動したい場合は、スクリプトをコピーして使うこともできる。
+
+```bash
+# 親プロジェクト直下で実行
+cp vibeboard/run-vibeboard.sh .
+./run-vibeboard.sh
+```
+
+どちらの配置でも既定の管理対象は親プロジェクトになる。`--root` 引数または
+`VIBEBOARD_ROOT` 環境変数を指定した場合は、そちらを優先する。
 
 親プロジェクト側の `.gitignore` には `vibeboard/dist/` と `vibeboard/node_modules/` を追加し、
 それ以外（`vibeboard/src/` など）は親リポジトリの git 管理対象に含める。
