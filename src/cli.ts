@@ -93,11 +93,15 @@ if (sub === 'init') {
 if (args.includes('--help') || args.includes('-h')) runHelp();
 if (args.includes('--version') || args.includes('-v')) runVersion();
 
-try {
-  const { config } = resolveConfig(args);
-  startServer(config);
-} catch (err) {
+function failToStart(err: unknown): never {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`[vibeboard] 起動に失敗しました: ${msg}`);
   process.exit(1);
+}
+
+try {
+  const { config } = resolveConfig(args);
+  startServer(config).catch(failToStart);
+} catch (err) {
+  failToStart(err);
 }

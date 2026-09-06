@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
+import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 
 interface TreeFile {
   name: string;
@@ -182,7 +183,7 @@ function isInsideRoot(child: string, root: string): boolean {
   }
 }
 
-export function startServer(config: VibeboardConfig): void {
+export async function startServer(config: VibeboardConfig): Promise<void> {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
@@ -525,15 +526,57 @@ export function startServer(config: VibeboardConfig): void {
   // 静的配信
   app.use(express.static(webDir));
 
-  app.listen(config.port, config.host, () => {
-    console.log(`[vibeboard] running at http://${config.host}:${config.port}`);
-    console.log(`[vibeboard] root: ${config.root}`);
-    console.log(`[vibeboard] title: ${config.title}`);
-    console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
-    console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
-    if (config.customTabs.length > 0) {
-      const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');
-      console.log(`[vibeboard] customTabs: ${cts}`);
+  // ポートが埋まっていた場合、同じ root の vibeboard なら停止して 1 度だけ再試行する。
+  try {
+    await listenOnce(app, config);
+  } catch (err) {
+    if (!isAddrInUse(err)) throw err;
+    const result = await reclaimPort(config);
+    if (!result.ok) {
+      console.error(`[vibeboard] 起動に失敗しました: ${result.message}`);
+      process.exit(1);
     }
+    console.log(`[vibeboard] ${result.message}。再試行します`);
+    await listenOnce(app, config);
+  }
+
+  writePidFile(config);
+  const cleanup = () => removePidFile(config.port);
+  process.on('exit', cleanup);
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(sig, () => {
+      cleanup();
+      process.exit(0);
+    });
+  }
+
+  console.log(`[vibeboard] running at http://${config.host}:${config.port}`);
+  console.log(`[vibeboard] root: ${config.root}`);
+  console.log(`[vibeboard] title: ${config.title}`);
+  console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
+  console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
+  if (config.customTabs.length > 0) {
+    const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');
+    console.log(`[vibeboard] customTabs: ${cts}`);
+  }
+}
+
+function isAddrInUse(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as NodeJS.ErrnoException).code === 'EADDRINUSE';
+}
+
+function listenOnce(app: express.Express, config: VibeboardConfig): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(config.port, config.host);
+    const onError = (err: Error) => {
+      server.removeListener('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
   });
 }

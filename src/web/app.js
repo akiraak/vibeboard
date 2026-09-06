@@ -1209,7 +1209,13 @@ function handleRoute() {
   const rawHash = location.hash.replace(/^#/, '');
 
   // 旧 #design/xxx.html → #specs/design/xxx.html （specs カテゴリがある場合のみ）
-  if (rawHash.startsWith('design/') && CATEGORY_BY_NAME.has('specs')) {
+  // 'design' という名前の**実在するカテゴリ**がある場合はそちらが優先。
+  // 互換処理が本物のカテゴリを横取りして specs へ飛ばしてしまうため。
+  if (
+    rawHash.startsWith('design/') &&
+    !CATEGORY_BY_NAME.has('design') &&
+    CATEGORY_BY_NAME.has('specs')
+  ) {
     location.replace(`#specs/${rawHash}`);
     return;
   }

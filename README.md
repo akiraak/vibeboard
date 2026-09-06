@@ -28,6 +28,8 @@
     （プレビュー自動更新／clean 編集は差し替え＋情報バー／dirty 編集は競合警告バー＋差分モーダル）
 - `docs/plans/<file>` ・ `docs/plans/<dir>/` を `docs/plans/archive/` に移動
 - ツールバーの `↻ 再取得` ボタン、または `R` キー単独で手動再取得
+- 起動時、同じ `--root` の vibeboard が既にポートを使っていれば自動で停止して起動し直す
+  （別プロジェクトの vibeboard や無関係なプロセスには触れない）
 
 ## 必要な前提構造
 
@@ -35,6 +37,8 @@ vibeboard は親プロジェクトに以下があることを前提に動く。
 
 ```
 <project-root>/
+├── run-vibeboard.sh           # 起動スクリプト (npm install が vibeboard/ から自動配置)
+├── vibeboard/                 # degit で vendor した vibeboard 本体
 ├── TODO.md                    # 必須: 現在のタスク
 ├── DONE.md                    # 必須: 完了したタスク
 ├── CLAUDE.md                  # 任意: AI エージェント向け規約 (vibeboard init で生成・更新)
@@ -59,12 +63,19 @@ vibeboard は **degit でプロジェクト直下に vendor して使う**（npm
 # プロジェクト直下で実行
 npx -y degit akiraak/vibeboard vibeboard   # 既存 vibeboard/ がある場合は事前に削除
 cd vibeboard
-npm install                                # prepare で dist/ も生成される
+npm install                                # prepare で dist/ を生成し、
+                                           # postinstall で run-vibeboard.sh を親へ配置
 
-# 起動 (親プロジェクト直下を root にして見る)
+# 起動 (プロジェクトルートから)
+cd ..
 ./run-vibeboard.sh
 # → http://localhost:3010 を開く
 ```
+
+`npm install` の postinstall が `vibeboard/run-vibeboard.sh` を**プロジェクトルート直下へ
+インストールする**ので、以降は日常的に使うルートから `./run-vibeboard.sh` で起動できる。
+`vibeboard/` 内から `./run-vibeboard.sh` を叩いても同じように動く（どちらの配置でも
+既定の管理対象は親プロジェクト）。
 
 `run-vibeboard.sh` は初回起動時に `npm install` を実行し、`dist/cli.js` が無い場合や
 TypeScript ソースが更新されている場合は自動的にビルドする。任意の CLI 引数もそのまま渡せる。
@@ -73,16 +84,24 @@ TypeScript ソースが更新されている場合は自動的にビルドする
 ./run-vibeboard.sh --port 3011
 ```
 
-親プロジェクト直下から起動したい場合は、スクリプトをコピーして使うこともできる。
+`--root` 引数または `VIBEBOARD_ROOT` 環境変数を指定した場合は、そちらを優先する。
+
+### 起動スクリプトの自動配置について
+
+postinstall は以下の場合はスキップする（無関係なディレクトリを散らかさないため）。
+
+- `VIBEBOARD_SKIP_LAUNCHER` が設定されている
+- `vibeboard/.git` がある（vibeboard 本体の開発クローン。degit 経由なら `.git` は剥がれている）
+- 親に `.git` / `package.json` / `CLAUDE.md` / `TODO.md` / `DONE.md` / `docs` のいずれも無い
+
+既にルートへ配置済みで内容が同じなら何もしない。異なる場合は上書きするので、
+ローカル改変していたなら親リポジトリの `git diff` で確認すること。
+
+ガードを無視して手動で配置し直したいときは次を実行する。
 
 ```bash
-# 親プロジェクト直下で実行
-cp vibeboard/run-vibeboard.sh .
-./run-vibeboard.sh
+cd vibeboard && npm run install-launcher
 ```
-
-どちらの配置でも既定の管理対象は親プロジェクトになる。`--root` 引数または
-`VIBEBOARD_ROOT` 環境変数を指定した場合は、そちらを優先する。
 
 親プロジェクト側の `.gitignore` には `vibeboard/dist/` と `vibeboard/node_modules/` を追加し、
 それ以外（`vibeboard/src/` など）は親リポジトリの git 管理対象に含める。
@@ -104,7 +123,7 @@ vibeboard 本体に改善が入ったら、再 degit で上書き取り込みし
 ```bash
 rm -rf vibeboard
 npx -y degit akiraak/vibeboard vibeboard
-cd vibeboard && npm install
+cd vibeboard && npm install   # ルートの run-vibeboard.sh も postinstall で更新される
 # 親リポジトリの git diff で残っていたローカル改変を確認しつつ、必要分を再適用
 ```
 
@@ -179,6 +198,7 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 | `VIBEBOARD_ROOT`   | `--root` と同等                                                      |
 | `VIBEBOARD_PORT`   | `--port` と同等（後方互換で `DEV_ADMIN_PORT` も読む）                |
 | `VIBEBOARD_TITLE`  | `--title` と同等                                                     |
+| `VIBEBOARD_SKIP_LAUNCHER` | 設定すると `npm install` 時に `run-vibeboard.sh` をプロジェクトルートへ配置しない |
 
 優先順位は `CLI 引数 > 環境変数 > デフォルト`。
 
@@ -382,11 +402,19 @@ node vibeboard/dist/cli.js --root .
 
 ### `EADDRINUSE: address already in use 127.0.0.1:3010`
 
-別のプロセスが `3010` を使っている。`--port` か `VIBEBOARD_PORT` で別ポートを指定する。
+ポートが埋まっていた場合、**同じ `--root` を管理している vibeboard** であれば自動的に停止して
+起動し直すので、前回の起動が残っていただけならこのエラーにはならない。
+
+それ以外（別プロジェクトの vibeboard、vibeboard 以外のプロセス）は**停止せずに終了する**。
+複数プロジェクトで vibeboard を並走させる運用を壊さないための仕様。`--port` か
+`VIBEBOARD_PORT` で別ポートを指定する。
 
 ```bash
 node vibeboard/dist/cli.js --port 3020
 ```
+
+判定は `$TMPDIR/vibeboard-<port>.json` に記録した pid と root で行う。pid ファイルが
+無い / 古い場合や、記録された pid のプロセス実体が vibeboard でない場合は停止しない。
 
 ### WSL2 で外部から TODO.md を編集しても画面が更新されない
 
