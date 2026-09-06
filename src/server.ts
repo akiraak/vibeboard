@@ -173,6 +173,51 @@ function toRootRel(absPath: string, root: string): string {
   return path.relative(root, absPath).split(path.sep).join('/');
 }
 
+// Files タブ用のツリー。カテゴリ用の listTree とは前提が違う:
+//   - 拡張子で絞らない
+//   - **dotfile を飛ばさない**（`.env` も出す。除外は名前の明示リストだけ）
+//   - タイトルを抽出しない（全ファイルを開くことになるため。表示はファイル名）
+// シンボリックリンクは辿らずファイルとして並べる（実体は開いたとき読み取り専用になる）。
+function listAllTree(absDir: string, excludes: string[], relPrefix: string = ''): Tree {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(absDir, { withFileTypes: true });
+  } catch {
+    return { files: [], dirs: [] };
+  }
+
+  const files: TreeFile[] = [];
+  const dirs: TreeDir[] = [];
+
+  for (const entry of entries) {
+    if (excludes.includes(entry.name)) continue;
+    const abs = path.join(absDir, entry.name);
+    const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+
+    if (entry.isDirectory()) {
+      const sub = listAllTree(abs, excludes, rel);
+      if (sub.files.length === 0 && sub.dirs.length === 0) continue;
+      let selfMtime = 0;
+      try { selfMtime = fs.statSync(abs).mtimeMs; } catch { /* ignore */ }
+      const mtime = Math.max(
+        selfMtime,
+        ...sub.files.map(f => f.mtime),
+        ...sub.dirs.map(d => d.mtime),
+      );
+      dirs.push({ name: entry.name, title: null, files: sub.files, dirs: sub.dirs, mtime });
+    } else {
+      let mtime = 0;
+      try { mtime = fs.lstatSync(abs).mtimeMs; } catch { continue; }
+      // title はファイル名そのもの。クライアントは同じなら 2 行目を出さない
+      files.push({ name: entry.name, path: rel, title: entry.name, mtime });
+    }
+  }
+
+  files.sort((a, b) => b.mtime - a.mtime);
+  dirs.sort((a, b) => b.mtime - a.mtime);
+  return { files, dirs };
+}
+
 function isSafeName(file: string, ext: string): boolean {
   return !file.includes('..') && !file.includes('/') && !file.includes('\\') && file.endsWith(ext);
 }
@@ -375,7 +420,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     // 対象が無い / 境界を通らないパスなら、何も監視せず接続だけ保つ
     // （エラーで切ると画面が「切断中」を出してしまうため）
     const requested = typeof req.query.watch === 'string' ? req.query.watch : '';
-    const resolved = requested ? resolveSource(config.root, requested) : null;
+    const resolved = requested ? resolveSource(config.root, requested, config.files.exclude) : null;
     const target = resolved && resolved.ok
       ? { relPath: resolved.relPath, absPath: resolved.absPath }
       : null;
@@ -512,7 +557,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
 
   // 生テキスト + mtime + 改行コード。編集できないものは content: null と理由を返す
   app.get('/api/source/*', (req: Request, res: Response) => {
-    const resolved = resolveSource(config.root, sourceParam(req));
+    const resolved = resolveSource(config.root, sourceParam(req), config.files.exclude);
     if (!resolved.ok) {
       res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
       return;
@@ -538,7 +583,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
 
   // 保存（mtime 楽観ロック + tmp → rename）。改行コードは eol で復元する
   app.put('/api/source/*', (req: Request, res: Response) => {
-    const resolved = resolveSource(config.root, sourceParam(req));
+    const resolved = resolveSource(config.root, sourceParam(req), config.files.exclude);
     if (!resolved.ok) {
       res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
       return;
@@ -580,11 +625,17 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     res.json({ success: true, data: { mtime: fs.statSync(resolved.absPath).mtimeMs }, error: null });
   });
 
+  // プロジェクト全体のファイルツリー（Files タブ）
+  app.get('/api/tree', (_req: Request, res: Response) => {
+    const tree = listAllTree(config.root, config.files.exclude);
+    res.json({ success: true, data: tree, error: null });
+  });
+
   // Markdown を HTML 化して返す（root 相対パス）。編集タブとカテゴリのプレビューを
   // 1 本にまとめるためのもので、素材の相対パス書き換えも従来と同じ処理を通す。
   app.get('/api/render/*', (req: Request, res: Response) => {
     const relPath = (req.params[0] as string) || '';
-    const resolved = resolveSource(config.root, relPath);
+    const resolved = resolveSource(config.root, relPath, config.files.exclude);
     if (!resolved.ok) {
       res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
       return;
@@ -618,6 +669,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     archive: c.archive,
     path: toRootRel(c.path, config.root),
   }));
+  const clientFiles = { label: config.files.label };
   const clientEditable = {
     label: config.editable.label,
     files: config.editable.files.map(f => ({
@@ -638,6 +690,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       title: config.title,
       categories: clientCategories,
       editable: clientEditable,
+      files: clientFiles,
       customTabs: clientCustomTabs,
     });
     return indexHtmlRaw
@@ -697,6 +750,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   console.log(`[vibeboard] title: ${config.title}`);
   console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
   console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
+  console.log(`[vibeboard] files: 除外 ${config.files.exclude.join(', ')}`);
   if (config.customTabs.length > 0) {
     const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');
     console.log(`[vibeboard] customTabs: ${cts}`);

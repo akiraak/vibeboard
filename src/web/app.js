@@ -2,6 +2,8 @@
 
 // 編集対象タブ（TODO 系）の URL スラッグ。表示ラベルは設定可能だがスラッグは固定。
 const EDITABLE_TAB = 'todo';
+// プロジェクト内の全ファイルを開くタブ。こちらもスラッグは固定。
+const FILES_TAB = 'files';
 
 // サーバから注入された設定。`__VIBEBOARD__` には categories / editable も含まれる。
 const VB_CONFIG = (typeof window !== 'undefined' && window.__VIBEBOARD__) || {};
@@ -21,7 +23,13 @@ const EDITABLE_BY_NAME = new Map(EDITABLE_FILES.map(f => [f.name, f]));
 // customTabs はサーバ側で正規化済み（name/label/baseUrl）。未指定なら空配列。
 const CUSTOM_TABS = Array.isArray(VB_CONFIG.customTabs) ? VB_CONFIG.customTabs : [];
 const CUSTOM_TAB_BY_NAME = new Map(CUSTOM_TABS.map(t => [t.name, t]));
-const CATEGORIES = [EDITABLE_TAB, ...CATEGORY_DEFS.map(c => c.name), ...CUSTOM_TABS.map(t => t.name)];
+const FILES_LABEL = (VB_CONFIG.files && VB_CONFIG.files.label) || 'Files';
+const CATEGORIES = [
+  EDITABLE_TAB,
+  FILES_TAB,
+  ...CATEGORY_DEFS.map(c => c.name),
+  ...CUSTOM_TABS.map(t => t.name),
+];
 
 const STORAGE_CATEGORY = 'vibeboard.activeCategory';
 const STORAGE_EXPANDED = 'vibeboard.expanded';
@@ -41,7 +49,10 @@ const pageTitle = document.getElementById('page-title');
 const topbarSub = document.getElementById('topbar-sub');
 const topbarTabs = document.getElementById('topbar-tabs');
 
-let docsTree = Object.fromEntries(CATEGORY_DEFS.map(c => [c.name, { files: [], dirs: [] }]));
+let docsTree = Object.fromEntries([
+  ...CATEGORY_DEFS.map(c => [c.name, { files: [], dirs: [] }]),
+  [FILES_TAB, { files: [], dirs: [] }],
+]);
 // デフォルトは最初のドキュメントカテゴリ（無ければ編集タブ）
 let activeCategory = CATEGORY_DEFS.length > 0 ? CATEGORY_DEFS[0].name : EDITABLE_TAB;
 let expanded = {};
@@ -104,6 +115,8 @@ function isDocDirty() {
 // tab + key から root 相対パスを組む。API はこれで引く。
 function docPathFor(tab, key) {
   if (!key) return null;
+  // Files タブの key は既に root 相対パスそのもの
+  if (tab === FILES_TAB) return key;
   if (tab === EDITABLE_TAB) {
     const f = EDITABLE_BY_NAME.get(key);
     if (!f) return null;
@@ -189,7 +202,10 @@ function saveSortByCategory() {
 }
 
 function getSortState(category) {
-  return sortByCategory[category] || { ...DEFAULT_SORT_STATE };
+  if (sortByCategory[category]) return sortByCategory[category];
+  // Files タブはファイルブラウザなので名前昇順を既定にする
+  if (category === FILES_TAB) return { key: 'name', mtimeDir: 'desc', nameDir: 'asc' };
+  return { ...DEFAULT_SORT_STATE };
 }
 
 function getDirForKey(state, key) {
@@ -302,10 +318,13 @@ function renderFileItem(category, file, depth) {
   title.textContent = file.title;
   a.appendChild(title);
 
-  const fileName = document.createElement('div');
-  fileName.className = 'nav-item-file';
-  fileName.textContent = file.name;
-  a.appendChild(fileName);
+  // タイトルがファイル名そのものなら 2 行目は出さない（Files タブは常にこちら）
+  if (file.title !== file.name) {
+    const fileName = document.createElement('div');
+    fileName.className = 'nav-item-file';
+    fileName.textContent = file.name;
+    a.appendChild(fileName);
+  }
 
   return a;
 }
@@ -489,14 +508,16 @@ function renderSidebar() {
   if (tree.files.length === 0 && tree.dirs.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'loading-text';
-    empty.textContent = 'ドキュメントがありません';
+    empty.textContent = activeCategory === FILES_TAB ? 'ファイルがありません' : 'ドキュメントがありません';
     sidebarNav.appendChild(empty);
     return;
   }
 
-  // archive ディレクトリはツリーの一番下に出す（それ以外は選択ソートで混ぜて並べる）
-  const regularDirs = tree.dirs.filter(d => d.name !== 'archive');
-  const archiveDirs = tree.dirs.filter(d => d.name === 'archive');
+  // archive ディレクトリはツリーの一番下に出す（それ以外は選択ソートで混ぜて並べる）。
+  // Files タブはただのファイル一覧なので archive を特別扱いしない。
+  const isCategory = activeCategory !== FILES_TAB;
+  const regularDirs = isCategory ? tree.dirs.filter(d => d.name !== 'archive') : tree.dirs;
+  const archiveDirs = isCategory ? tree.dirs.filter(d => d.name === 'archive') : [];
 
   const sortState = getSortState(activeCategory);
   const frag = document.createDocumentFragment();
@@ -667,7 +688,7 @@ async function archiveDirectory(category, dirName) {
     const res = await fetch(`/api/docs/${encodeURIComponent(category)}/${encodeURIComponent(dirName)}/archive-dir`, { method: 'POST' });
     const json = await res.json();
     if (!json.success) throw new Error(json.error || 'アーカイブに失敗しました');
-    docsTree = await fetchJson('/api/docs');
+    docsTree = await fetchAllTrees();
 
     const parsed = parseHash();
     const inArchivedDir = parsed
@@ -695,7 +716,7 @@ async function archiveFile(category, filename) {
     const res = await fetch(`/api/docs/${encodeURIComponent(category)}/${encodeURIComponent(filename)}/archive`, { method: 'POST' });
     const json = await res.json();
     if (!json.success) throw new Error(json.error || 'アーカイブに失敗しました');
-    docsTree = await fetchJson('/api/docs');
+    docsTree = await fetchAllTrees();
     const newHash = `${category}/archive/${encodeURIComponent(filename)}`;
     if (location.hash === `#${newHash}`) {
       renderSidebar();
@@ -1018,9 +1039,18 @@ async function saveDoc(options = {}) {
 }
 
 // サイドバーのツリーを取り直して描き直す（タイトルは本文の H1 から抜いているため）
+// カテゴリのツリーと Files タブのツリーをまとめて取り直す
+async function fetchAllTrees() {
+  const [docs, all] = await Promise.all([
+    fetchJson('/api/docs'),
+    fetchJson('/api/tree'),
+  ]);
+  return { ...docs, [FILES_TAB]: all };
+}
+
 async function refreshDocsTree() {
   try {
-    docsTree = await fetchJson('/api/docs');
+    docsTree = await fetchAllTrees();
     renderSidebar();
   } catch {
     // 一覧の更新に失敗しても編集自体は成立しているので黙って諦める
@@ -1365,6 +1395,16 @@ function handleRoute() {
     return;
   }
 
+  if (category === FILES_TAB) {
+    // Files タブは拡張子で分けない（.html もソースとして開く）
+    if (expandAncestors(category, filePath)) needSidebarRerender = true;
+    if (needSidebarRerender) renderSidebar();
+    else refreshActiveHighlight();
+    setWatchTarget(filePath);
+    openDoc(FILES_TAB, filePath);
+    return;
+  }
+
   if (expandAncestors(category, filePath)) {
     needSidebarRerender = true;
   }
@@ -1393,6 +1433,7 @@ function buildTabs() {
     ...CUSTOM_TABS.map(t => ({ name: t.name, label: t.label })),
     { name: EDITABLE_TAB, label: EDITABLE_LABEL },
     ...CATEGORY_DEFS.map(c => ({ name: c.name, label: c.label })),
+    { name: FILES_TAB, label: FILES_LABEL },
   ];
   for (const t of tabs) {
     const btn = document.createElement('button');
@@ -2003,7 +2044,7 @@ async function init() {
   setWatchTarget(null);
 
   try {
-    docsTree = await fetchJson('/api/docs');
+    docsTree = await fetchAllTrees();
     renderSidebar();
     handleRoute();
   } catch (err) {
