@@ -355,8 +355,15 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     res.json({ success: true, data: { path: `archive/${file}` }, error: null });
   });
 
-  // SSE: 編集可能ファイルの外部変更を通知
+  // SSE: **クライアントが今開いている 1 ファイル**の外部変更を通知する。
   // 注: `/api/files/:name` より先にマウントすること（:name にマッチしてしまうため）
+  //
+  // 以前は editable の 4 件を固定で監視していたが、クライアントは開いていない
+  // ファイルの通知を捨てていたので実質は無駄だった。対象がプロジェクト全体に
+  // 広がった今、ツリー全体を張るわけにもいかない（`fs.watch` の recursive は
+  // WSL2 で不安定で、ポーリング保険の母数も跳ね上がる）。
+  // クライアントが `?watch=<root 相対パス>` で対象を伝え、開くファイルが変わったら
+  // 繋ぎ直す方式にする。
   app.get('/api/files/watch', (req: Request, res: Response) => {
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -365,41 +372,45 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    const lastMtime: Record<string, number> = {};
-    for (const [name, ec] of editableByName) {
-      if (fs.existsSync(ec.path)) lastMtime[name] = fs.statSync(ec.path).mtimeMs;
+    // 対象が無い / 境界を通らないパスなら、何も監視せず接続だけ保つ
+    // （エラーで切ると画面が「切断中」を出してしまうため）
+    const requested = typeof req.query.watch === 'string' ? req.query.watch : '';
+    const resolved = requested ? resolveSource(config.root, requested) : null;
+    const target = resolved && resolved.ok
+      ? { relPath: resolved.relPath, absPath: resolved.absPath }
+      : null;
+
+    let lastMtime: number | null = null;
+    if (target && fs.existsSync(target.absPath)) {
+      lastMtime = fs.statSync(target.absPath).mtimeMs;
     }
 
-    const sendChange = (name: string) => {
-      const ec = editableByName.get(name);
-      if (!ec || !fs.existsSync(ec.path)) return;
+    const sendChange = () => {
+      if (!target) return;
       let mtime: number;
       try {
-        mtime = fs.statSync(ec.path).mtimeMs;
+        mtime = fs.statSync(target.absPath).mtimeMs;
       } catch {
         return;
       }
-      if (lastMtime[name] === mtime) return;
-      lastMtime[name] = mtime;
-      res.write(`event: change\ndata: ${JSON.stringify({ name, mtime })}\n\n`);
+      if (lastMtime === mtime) return;
+      lastMtime = mtime;
+      res.write(`event: change\ndata: ${JSON.stringify({ path: target.relPath, mtime })}\n\n`);
     };
 
-    // fs.watch はエディタの atomic rename で発火しないことがあるため、個別監視 + 下のポーリングで保険
-    const watchers: fs.FSWatcher[] = [];
-    for (const [name, ec] of editableByName) {
+    // fs.watch はエディタの atomic rename で発火しないことがあるため、下のポーリングで保険
+    let watcher: fs.FSWatcher | null = null;
+    if (target) {
       try {
-        const watcher = fs.watch(ec.path, () => sendChange(name));
+        watcher = fs.watch(target.absPath, () => sendChange());
         watcher.on('error', () => { /* ignore: poll で拾う */ });
-        watchers.push(watcher);
       } catch {
         // ファイルが無い場合などは黙って無視（ポーリングで拾う）
       }
     }
 
     // ポーリング保険（WSL2 で fs.watch が不安定な事例があるため）
-    const pollInterval = setInterval(() => {
-      for (const name of editableByName.keys()) sendChange(name);
-    }, 2000);
+    const pollInterval = target ? setInterval(sendChange, 2000) : null;
 
     // keep-alive ping
     const pingInterval = setInterval(() => {
@@ -407,10 +418,10 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     }, 30000);
 
     const cleanup = () => {
-      clearInterval(pollInterval);
+      if (pollInterval) clearInterval(pollInterval);
       clearInterval(pingInterval);
-      for (const w of watchers) {
-        try { w.close(); } catch { /* ignore */ }
+      if (watcher) {
+        try { watcher.close(); } catch { /* ignore */ }
       }
     };
     req.on('close', cleanup);

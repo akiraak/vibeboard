@@ -65,10 +65,12 @@ const docState = {
   conflict: null,      // { mtime: number, barVisible: boolean } | null
 };
 
-// SSE 接続状態
+// SSE 接続状態。監視対象は「今開いているファイル」1 本で、開くたびに張り替える。
 const sseState = {
   source: null,
   connected: false,
+  watchPath: null,     // 現在サーバへ伝えている root 相対パス（null = 監視なし）
+  reconnecting: false, // 意図的な張り替え中。「切断中」を出さないための印
 };
 
 // customTabs 用の状態。サイドバー結果をキャッシュ / SSE を 1 タブだけアクティブに保つ。
@@ -1288,6 +1290,7 @@ function handleRoute() {
   if (!parsed) {
     refreshActiveHighlight();
     showEmpty();
+    setWatchTarget(null);
     // hash が無くても customTab がアクティブなら SSE は繋いでおく（サイドバー更新のため）
     if (CUSTOM_TAB_BY_NAME.has(activeCategory)) {
       ensureCustomTabSource(activeCategory);
@@ -1300,6 +1303,7 @@ function handleRoute() {
 
   const { category, filePath } = parsed;
   if (!CATEGORIES.includes(category)) {
+    setWatchTarget(null);
     showError('不正なカテゴリです');
     return;
   }
@@ -1318,6 +1322,7 @@ function handleRoute() {
   }
 
   if (CUSTOM_TAB_BY_NAME.has(category)) {
+    setWatchTarget(null);
     // customTab: filePath は item id。空文字なら未選択扱い。
     if (needSidebarRerender) {
       renderSidebar();
@@ -1337,6 +1342,7 @@ function handleRoute() {
     if (!EDITABLE_NAMES.includes(filePath)) {
       if (needSidebarRerender) renderSidebar();
       else refreshActiveHighlight();
+      setWatchTarget(null);
       showError('対応していないファイルです');
       return;
     }
@@ -1348,6 +1354,7 @@ function handleRoute() {
     }
     if (needSidebarRerender) renderSidebar();
     else refreshActiveHighlight();
+    setWatchTarget(docPathFor(EDITABLE_TAB, filePath));
     openDoc(EDITABLE_TAB, filePath);
     return;
   }
@@ -1368,10 +1375,13 @@ function handleRoute() {
   const ext = lastDot >= 0 ? filePath.slice(lastDot).toLowerCase() : '';
   if (ext === '.html') {
     // .html はカテゴリではレンダリング結果を iframe で見る（ソースは編集対象外）
+    setWatchTarget(null);
     renderDesign(category, filePath);
   } else if (ext === '.md') {
+    setWatchTarget(docPathFor(category, filePath));
     openDoc(category, filePath);
   } else {
+    setWatchTarget(null);
     showError('対応していないファイル形式です');
   }
 }
@@ -1423,6 +1433,7 @@ function setupTabs() {
       }
       refreshActiveHighlight();
       showEmpty();
+      setWatchTarget(null);
 
       // customTab に入ったら SSE を確立（サイドバーは renderSidebar 内でフェッチ済み）
       if (CUSTOM_TAB_BY_NAME.has(cat)) {
@@ -1462,48 +1473,67 @@ function setupRefreshShortcut() {
 
 // === SSE: 外部変更のリアルタイム反映 ===
 
-function connectEventSource() {
+// 監視対象を設定して SSE を張り直す。同じ対象なら何もしない。
+// EventSource は URL を後から変えられないので、開くファイルが変わるたびに繋ぎ直す。
+function setWatchTarget(path) {
   if (typeof EventSource === 'undefined') return;
+  const next = path || null;
+  if (sseState.source && sseState.watchPath === next) return;
+
+  if (sseState.source) {
+    // 自分で閉じるぶんには「切断中」を出さない
+    sseState.reconnecting = true;
+    try { sseState.source.close(); } catch { /* ignore */ }
+    sseState.source = null;
+    sseState.connected = false;
+  }
+  sseState.watchPath = next;
+  updateSseIndicator();
+
   try {
-    const es = new EventSource('/api/files/watch');
+    const url = next ? `/api/files/watch?watch=${encodePath(next)}` : '/api/files/watch';
+    const es = new EventSource(url);
     sseState.source = es;
     es.addEventListener('open', () => {
       sseState.connected = true;
+      sseState.reconnecting = false;
       updateSseIndicator();
     });
     es.addEventListener('error', () => {
       // EventSource は自動で再接続を試みる
       sseState.connected = false;
+      sseState.reconnecting = false;
       updateSseIndicator();
     });
     es.addEventListener('change', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (typeof payload.name !== 'string' || typeof payload.mtime !== 'number') return;
-        handleExternalChange(payload.name, payload.mtime);
+        if (typeof payload.path !== 'string' || typeof payload.mtime !== 'number') return;
+        handleExternalChange(payload.path, payload.mtime);
       } catch {
         // ignore malformed
       }
     });
   } catch {
-    // ignore
+    sseState.reconnecting = false;
+    updateSseIndicator();
   }
 }
 
 function updateSseIndicator() {
   const el = document.getElementById('sse-indicator');
   if (!el) return;
-  el.hidden = sseState.connected;
+  el.hidden = sseState.connected || sseState.reconnecting;
 }
 
-async function handleExternalChange(name, mtime) {
+async function handleExternalChange(path, mtime) {
   // 自分の保存中の書き込みは無視
   if (saveInFlight) return;
   // 自分が書いた mtime は無視（SSE が PUT 応答より先に届いたケースも含む）
   if (selfWrittenMtimes.has(mtime)) return;
   // 現在開いていないファイルは何もしない（次に開くときに最新を取りに行く）
-  // Phase 3 で任意ファイルの監視に広げるまで、通知は Root タブの 4 件のみ
-  if (docState.tab !== EDITABLE_TAB || docState.key !== name) return;
+  // 通知は今開いているファイルについてのみ来る想定だが、張り替えの行き違いに備えて照合する
+  if (!docState.path || docState.path !== path) return;
   // 既知の mtime と一致するなら無視（自分の保存直後に想定）
   if (docState.mtime === mtime) return;
   // 同じ競合 mtime を再通知された場合は UI 再構築を避ける
@@ -1970,7 +2000,7 @@ async function init() {
   setupDocLinkInterception();
   renderTabs();
   updateSseIndicator();
-  connectEventSource();
+  setWatchTarget(null);
 
   try {
     docsTree = await fetchJson('/api/docs');
