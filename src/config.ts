@@ -31,6 +31,10 @@ export interface CustomTabConfig {
   name: string;    // URL セグメント / ハッシュキー (例: 'sample')
   label: string;   // タブ表示名 (例: 'Sample')
   baseUrl: string; // プラグインの HTTP ベース URL (末尾スラッシュなしに正規化)
+  // タブの中身を出すプロセスの起動コマンド (省略時は自分で起動する)。
+  // **配列でだけ受ける**。1 本の文字列にすると shell を通すことになり、
+  // 設定ファイルの中身がそのままシェルの文になる。
+  command: string[] | null;
 }
 
 export interface VibeboardConfig {
@@ -306,6 +310,29 @@ function normalizeFiles(raw: unknown): FilesConfig {
   return { label, exclude };
 }
 
+// 起動コマンド。shell を通さないため配列だけを受ける (文字列は明示的に弾く)。
+function normalizeCommand(raw: unknown, label: string): string[] | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === 'string') {
+    throw new Error(`${label} は配列で指定してください (例: ["node", "server.js"])`);
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error(`${label} は配列である必要があります`);
+  }
+  if (raw.length === 0) {
+    throw new Error(`${label} を空配列にはできません`);
+  }
+  const out: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const v = raw[i];
+    if (typeof v !== 'string' || !v.trim()) {
+      throw new Error(`${label}[${i}] は空でない文字列である必要があります`);
+    }
+    out.push(v);
+  }
+  return out;
+}
+
 function normalizeBaseUrl(raw: string, label: string): string {
   let url: URL;
   try {
@@ -357,7 +384,8 @@ function normalizeCustomTabs(
     const rawBaseUrl = typeof e.baseUrl === 'string' ? e.baseUrl.trim() : '';
     if (!rawBaseUrl) throw new Error(`customTabs[${i}].baseUrl は必須です`);
     const baseUrl = normalizeBaseUrl(rawBaseUrl, `customTabs[${i}].baseUrl`);
-    out.push({ name, label, baseUrl });
+    const command = normalizeCommand(e.command, `customTabs[${i}].command`);
+    out.push({ name, label, baseUrl, command });
   }
   return out;
 }

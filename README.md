@@ -277,7 +277,11 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
     {
       "name": "sample",                   // 必須。URL/ハッシュのスラッグ。英数と '-'。他タブと衝突不可
       "label": "Sample",                  // タブ表示名。省略時は name
-      "baseUrl": "http://127.0.0.1:8181"  // 必須。プラグインの http/https ベース URL（末尾 / は正規化で除去）
+      "baseUrl": "http://127.0.0.1:8181", // 必須。プラグインの http/https ベース URL（末尾 / は正規化で除去）
+      // 任意。タブの中身を出すプロセスの起動コマンド。vibeboard が一緒に起こして一緒に止める。
+      // **配列でだけ受ける**（shell を通さない）。cwd は --root。
+      // 既に baseUrl が応えるなら起動しない
+      "command": ["node", "tools/sample/server.js"]
     }
   ]
 }
@@ -315,6 +319,7 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 - `files.exclude` が配列でない / 要素が空文字 / パス区切り文字（`/` `\\`）や `.` `..` を含む
 - `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・`files`・categories）と衝突 / 重複
 - `customTabs[].baseUrl` が空 / URL として不正 / `http`・`https` 以外 / `?` や `#` を含む
+- `customTabs[].command` が文字列 / 配列でない / 空配列 / 要素が空文字
 
 優先順位は `CLI 引数 > 環境変数 > vibeboard.config.json > デフォルト`。
 
@@ -331,6 +336,9 @@ fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-
 | `GET /api/sidebar` | `{ "items": [...] }` を返す。左サイドバーの項目一覧 |
 | `GET /view?item=<id>` | item に対応する HTML を返す。右ペインの iframe に表示される |
 | `GET /api/watch` | SSE。`item-changed` / `sidebar` イベントで iframe・サイドバーを自動更新 |
+
+プラグインのプロセスは `customTabs[].command` を書いておけば vibeboard が一緒に起こす
+（下記「プラグインを一緒に起動する」）。
 
 すべて CORS を許可すること（`Access-Control-Allow-Origin`）。`/view` の HTML は iframe 埋め込みのため
 `Content-Security-Policy: frame-ancestors http://127.0.0.1:*`（または vibeboard のオリジン）を返す。
@@ -354,6 +362,32 @@ fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-
   プラグインが iframe 内の inline script で自前更新する想定（ちらつき・スクロール位置リセットを避けたい場合）。
   `reload` 省略時は `true` 扱い。
 - `event: sidebar` — サイドバーを再フェッチして描き直す。
+
+### プラグインを一緒に起動する（`command`）
+
+customTab の中身はブラウザが `baseUrl` へ直接つなぐ別プロセスなので、それが起動して
+いないとタブは「接続できません: Failed to fetch」で終わる。起動を人の手に任せると
+**本体は動いているのにタブだけ死んでいる**が普通に起きるので、タブの宣言と同じ場所に
+起動コマンドを書ける。
+
+```jsonc
+{ "name": "tasks", "baseUrl": "http://127.0.0.1:3012",
+  "command": ["node", "tools/vibeboard-tasks/server.js", "--root", "."] }
+```
+
+```
+$ ./run-vibeboard.sh
+[vibeboard] running at http://127.0.0.1:3010
+[vibeboard] customTab tasks: node tools/vibeboard-tasks/server.js --root . (pid: 12345)
+[tasks] listening on http://127.0.0.1:3012
+```
+
+- **shell を通さない**。文字列 1 本ではなく配列で書く（設定ファイルがそのままシェルの文になるのを避ける）
+- cwd は `--root`。標準出力は `[<name>] ` を付けて本体のログに混ぜる
+- 起動前に `baseUrl` を叩き、**応えるものが居れば起動しない**（自分で立ち上げてある場合や、
+  前回の残りを二重に起こさないため）。この判定のぶん、起動が最大 1 秒ほど遅くなることがある
+- vibeboard を止めると一緒に止まる。**自分で起こしていないプロセスは道連れにしない**
+- コマンドが落ちても本体は動き続ける（ログに終了コードを出す）
 
 ### 挙動
 

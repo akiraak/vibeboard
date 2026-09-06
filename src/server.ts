@@ -4,6 +4,7 @@ import path from 'path';
 import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
+import { startSidecars, stopSidecars } from './sidecar';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
@@ -813,11 +814,13 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   };
   // customTabs は baseUrl ごとクライアントへ流す（クライアントが直接 fetch するため）。
   // baseUrl はループバック前提なので秘匿対象ではない。
-  const clientCustomTabs: CustomTabConfig[] = config.customTabs.map(t => ({
-    name: t.name,
-    label: t.label,
-    baseUrl: t.baseUrl,
-  }));
+  // **command は渡さない**（起動はサーバ側の話で、ブラウザに配る理由が無い）。
+  const clientCustomTabs: Pick<CustomTabConfig, 'name' | 'label' | 'baseUrl'>[] =
+    config.customTabs.map(t => ({
+      name: t.name,
+      label: t.label,
+      baseUrl: t.baseUrl,
+    }));
   const renderIndexHtml = (): string => {
     const clientConfig = JSON.stringify({
       title: config.title,
@@ -869,7 +872,11 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   }
 
   writePidFile(config);
-  const cleanup = () => removePidFile(config.port);
+  // customTab のプロセスも一緒に落とす（本体だけ死んで中身が残るのを避ける）
+  const cleanup = () => {
+    stopSidecars();
+    removePidFile(config.port);
+  };
   process.on('exit', cleanup);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     process.on(sig, () => {
@@ -887,6 +894,8 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   if (config.customTabs.length > 0) {
     const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');
     console.log(`[vibeboard] customTabs: ${cts}`);
+    // listen できてから起こす（ポートを譲って終了する場合に置き去りにしないため）
+    await startSidecars(config);
   }
 }
 
