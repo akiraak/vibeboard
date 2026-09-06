@@ -122,10 +122,28 @@ function docPathFor(tab, key) {
     if (!f) return null;
     return typeof f.path === 'string' && f.path ? f.path : key;
   }
-  const cat = CATEGORY_BY_NAME.get(tab);
-  if (!cat) return null;
-  const base = typeof cat.path === 'string' ? cat.path : `docs/${tab}`;
+  const base = categoryBasePath(tab);
+  if (base === null) return null;
   return base ? `${base}/${key}` : key;
+}
+
+// カテゴリのディレクトリ（root 相対）。カテゴリでなければ null。
+function categoryBasePath(name) {
+  const cat = CATEGORY_BY_NAME.get(name);
+  if (!cat) return null;
+  return typeof cat.path === 'string' ? cat.path : `docs/${name}`;
+}
+
+// root 相対パスをどのタブで開くか決める。
+// 元のタブに収まるならそのまま、収まらなければ Files タブへ落とす
+// （カテゴリのツリーは .md / .html しか並べないので、他の場所・拡張子は映らない）。
+function docHashForPath(path, preferTab) {
+  const base = preferTab ? categoryBasePath(preferTab) : null;
+  if (base && path.startsWith(`${base}/`)) {
+    const key = path.slice(base.length + 1);
+    if (/\.(md|html)$/i.test(key)) return `${preferTab}/${encodePath(key)}`;
+  }
+  return `${FILES_TAB}/${encodePath(path)}`;
 }
 
 function sourceUrl(path) {
@@ -433,11 +451,11 @@ function renderTodoSidebar() {
   refreshSidebarConflictBadge();
 }
 
-// サイドバー上端のソート切替トグル。
+// サイドバー上端の行。左にソート切替トグル、右に「+ 新規」。
 // 通常カテゴリのときのみ表示し、TODO タブでは hidden にする。
-// アクティブキーには ↑/↓ を併記。アクティブを再クリックすると方向を反転、
+// ソートはアクティブキーに ↑/↓ を併記。アクティブを再クリックすると方向を反転、
 // 非アクティブをクリックするとそのキーの記憶済み方向で切替。
-function renderSortControl() {
+function renderSidebarHeader() {
   if (!sidebarSort) return;
   if (activeCategory === EDITABLE_TAB) {
     sidebarSort.hidden = true;
@@ -487,10 +505,22 @@ function renderSortControl() {
     group.appendChild(btn);
   }
   sidebarSort.appendChild(group);
+
+  // Files タブとカテゴリでは新規作成できる。
+  // Root タブ（固定 4 ファイル）と customTab（中身はプラグイン側）には出さない。
+  if (activeCategory === FILES_TAB || CATEGORY_BY_NAME.has(activeCategory)) {
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.className = 'sidebar-new-btn';
+    newBtn.textContent = '+ 新規';
+    newBtn.title = 'ファイルを新規作成';
+    newBtn.addEventListener('click', createFile);
+    sidebarSort.appendChild(newBtn);
+  }
 }
 
 function renderSidebar() {
-  renderSortControl();
+  renderSidebarHeader();
 
   if (activeCategory === EDITABLE_TAB) {
     renderTodoSidebar();
@@ -729,6 +759,137 @@ async function archiveFile(category, filename) {
   }
 }
 
+// === 新規作成 / リネーム / 削除 ===
+//
+// 対象はファイル 1 個だけ（ディレクトリは作らないし消さない）。パスの妥当性は
+// サーバの resolveSource が最終判定なので、ここでは体裁だけ整えて投げる。
+
+// 「+ 新規」の初期値。今いる場所に寄せる（Files タブは開いているファイルの
+// ディレクトリ、カテゴリはそのカテゴリ直下）。
+function newFileBasePath() {
+  if (activeCategory === FILES_TAB) {
+    const cur = docState.tab === FILES_TAB && docState.path ? docState.path : '';
+    const slash = cur.lastIndexOf('/');
+    return slash > 0 ? `${cur.slice(0, slash)}/` : '';
+  }
+  const base = categoryBasePath(activeCategory);
+  return base ? `${base}/` : '';
+}
+
+// 入力されたパスを整える（前後の空白と先頭の / を落とすだけ。判定はサーバ側）
+function normalizeInputPath(input) {
+  return input.trim().replace(/^\/+/, '');
+}
+
+// .md だけ H1 を入れておく。カテゴリのツリーは H1 をタイトルとして並べるので、
+// 空のままだと一覧で見分けがつかない。それ以外の拡張子は空で作る。
+function initialContentFor(path) {
+  if (!isMarkdownPath(path)) return '';
+  const name = path.split('/').pop().replace(/\.md$/i, '');
+  return `# ${name}\n\n`;
+}
+
+// 作成 / 移動のあと、そのファイルを開き直す。
+// hash が変わらない場合は hashchange が飛ばないので自分で handleRoute を呼ぶ。
+function goToPath(path, preferTab) {
+  const hash = docHashForPath(path, preferTab);
+  if (location.hash === `#${hash}`) {
+    renderSidebar();
+    handleRoute();
+  } else {
+    location.hash = hash;
+  }
+}
+
+async function createFile() {
+  const input = prompt('新しいファイルのパス（プロジェクトルートからの相対パス）', newFileBasePath());
+  if (input === null) return;
+  const target = normalizeInputPath(input);
+  if (!target) return;
+  // 作成後にどのタブで開くかは、押した時点のタブを基準にする
+  const preferTab = activeCategory;
+  try {
+    const res = await fetch(sourceUrl(target), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: initialContentFor(target) }),
+    });
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error || '作成に失敗しました');
+    docsTree = await fetchAllTrees();
+    // 作ったばかりのファイルはプレビューしても空なので、編集で開く
+    docState.mode = 'edit';
+    goToPath(json.data.path, preferTab);
+    showToast('作成しました');
+  } catch (err) {
+    alert(`作成に失敗しました: ${err.message}`);
+  }
+}
+
+async function renameDoc() {
+  if (!docState.path) return;
+  // 移動すると開き直しになるので、未保存のまま走らせない
+  if (isDocDirty()) {
+    alert('未保存の変更があります。保存するか破棄してから実行してください');
+    return;
+  }
+  const input = prompt('新しいパス（プロジェクトルートからの相対パス）', docState.path);
+  if (input === null) return;
+  const target = normalizeInputPath(input);
+  if (!target || target === docState.path) return;
+  const preferTab = docState.tab;
+  try {
+    const res = await fetch(`/api/move/${encodePath(docState.path)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: target }),
+    });
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error || 'リネームに失敗しました');
+    docsTree = await fetchAllTrees();
+    // 移動先が元のタブに収まらなければ Files タブで開き直す。
+    // 開き直しの中で監視対象（SSE）と親ディレクトリの展開も張り替わる
+    goToPath(json.data.path, preferTab);
+    showToast('移動しました');
+  } catch (err) {
+    alert(`リネームに失敗しました: ${err.message}`);
+  }
+}
+
+async function deleteDoc() {
+  if (!docState.path) return;
+  if (!confirm(`${docState.path} を削除します。取り消せません。よろしいですか？`)) return;
+  try {
+    const res = await fetch(sourceUrl(docState.path), { method: 'DELETE' });
+    const json = await res.json();
+    if (!json.success) throw new Error(json.error || '削除に失敗しました');
+    resetDocState();
+    docsTree = await fetchAllTrees();
+    renderSidebar();
+    // 消したファイルの hash を残さない。履歴を増やさず、hashchange も起こさないので
+    // handleRoute は自分で呼ぶ（未保存確認に引っかからないよう state は先に空にしてある）
+    history.replaceState(null, '', location.pathname + location.search);
+    handleRoute();
+    updateConflictIndicators();
+    showToast('削除しました');
+  } catch (err) {
+    alert(`削除に失敗しました: ${err.message}`);
+  }
+}
+
+function resetDocState() {
+  docState.tab = null;
+  docState.key = null;
+  docState.path = null;
+  docState.content = '';
+  docState.savedContent = '';
+  docState.mtime = 0;
+  docState.eol = 'lf';
+  docState.readOnly = false;
+  docState.readOnlyReason = null;
+  docState.conflict = null;
+}
+
 // 編集対象を開く。Root タブもカテゴリも同じ経路を通る。
 // 読み書きは /api/source/<root 相対パス>、プレビューは /api/render/<同> の 2 本だけ。
 async function openDoc(tab, key) {
@@ -818,6 +979,24 @@ function buildDocLayout() {
     archiveBtn.textContent = 'アーカイブする';
     archiveBtn.addEventListener('click', () => archiveFile(docState.tab, docState.key));
     actions.appendChild(archiveBtn);
+  }
+
+  // Root タブの 4 件は「決まった名前で並べる」ものなので、ここからは動かさない。
+  // 読み取り専用（バイナリ等）でも移動と削除はできる（中身に触らないため）
+  if (docState.tab !== EDITABLE_TAB && docState.path) {
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'doc-action';
+    renameBtn.textContent = 'リネーム';
+    renameBtn.addEventListener('click', renameDoc);
+    actions.appendChild(renameBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'doc-action doc-action-danger';
+    deleteBtn.textContent = '削除';
+    deleteBtn.addEventListener('click', deleteDoc);
+    actions.appendChild(deleteBtn);
   }
 
   if (docState.mode === 'edit' && !docState.readOnly) {

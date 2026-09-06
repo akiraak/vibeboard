@@ -7,8 +7,10 @@ import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
+  createSourceExclusive,
   isEol,
   isSymlink,
+  moveSourceExclusive,
   readSource,
   resolveSource,
   writeSourceAtomic,
@@ -623,6 +625,137 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       return;
     }
     res.json({ success: true, data: { mtime: fs.statSync(resolved.absPath).mtimeMs }, error: null });
+  });
+
+  // 新規作成。親ディレクトリは作る（ディレクトリ単体の作成は用意しない）
+  app.post('/api/source/*', (req: Request, res: Response) => {
+    const resolved = resolveSource(config.root, sourceParam(req), config.files.exclude);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    const body = req.body as { content?: unknown } | undefined;
+    const content = body && body.content !== undefined ? body.content : '';
+    if (typeof content !== 'string') {
+      res.status(400).json({ success: false, data: null, error: 'content が不正です' });
+      return;
+    }
+    if (Buffer.byteLength(content, 'utf-8') > MAX_SOURCE_BYTES) {
+      res.status(413).json({ success: false, data: null, error: 'ファイルが大きすぎます' });
+      return;
+    }
+    try {
+      createSourceExclusive(resolved.absPath, content);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        res.status(409).json({ success: false, data: null, error: '同じ名前のファイルが既にあります' });
+        return;
+      }
+      // 途中のセグメントが既にファイルとして存在する場合など
+      if (code === 'ENOTDIR' || code === 'EISDIR') {
+        res.status(400).json({ success: false, data: null, error: 'その場所には作成できません' });
+        return;
+      }
+      res.status(500).json({ success: false, data: null, error: '作成に失敗しました' });
+      return;
+    }
+    res.json({
+      success: true,
+      data: { path: resolved.relPath, mtime: fs.statSync(resolved.absPath).mtimeMs },
+      error: null,
+    });
+  });
+
+  // 削除。取り消せないので、対象はファイル 1 個だけに絞る
+  // （ディレクトリは中身ごと消えてしまうため受けない）
+  app.delete('/api/source/*', (req: Request, res: Response) => {
+    const resolved = resolveSource(config.root, sourceParam(req), config.files.exclude);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(resolved.absPath);
+    } catch {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    if (st.isDirectory()) {
+      res.status(400).json({ success: false, data: null, error: 'ディレクトリは削除できません' });
+      return;
+    }
+    // シンボリックリンクは読み書きと同じく触らない（消せてもここからは作り直せない）
+    if (st.isSymbolicLink()) {
+      res.status(403).json({ success: false, data: null, error: 'シンボリックリンクは削除できません' });
+      return;
+    }
+    try {
+      fs.unlinkSync(resolved.absPath);
+    } catch {
+      res.status(500).json({ success: false, data: null, error: '削除に失敗しました' });
+      return;
+    }
+    res.json({ success: true, data: { path: resolved.relPath }, error: null });
+  });
+
+  // リネーム / 移動。**移動先もクライアント入力なので同じ境界を通す**
+  app.post('/api/move/*', (req: Request, res: Response) => {
+    const from = resolveSource(config.root, (req.params[0] as string) || '', config.files.exclude);
+    if (!from.ok) {
+      res.status(from.status).json({ success: false, data: null, error: from.error });
+      return;
+    }
+    const body = req.body as { to?: unknown } | undefined;
+    if (!body || typeof body.to !== 'string') {
+      res.status(400).json({ success: false, data: null, error: 'to が不正です' });
+      return;
+    }
+    const to = resolveSource(config.root, body.to, config.files.exclude);
+    if (!to.ok) {
+      res.status(to.status).json({ success: false, data: null, error: `移動先: ${to.error}` });
+      return;
+    }
+    if (to.relPath === from.relPath) {
+      res.status(400).json({ success: false, data: null, error: '移動元と移動先が同じです' });
+      return;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(from.absPath);
+    } catch {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    if (st.isDirectory()) {
+      res.status(400).json({ success: false, data: null, error: 'ディレクトリは移動できません' });
+      return;
+    }
+    if (st.isSymbolicLink()) {
+      res.status(403).json({ success: false, data: null, error: 'シンボリックリンクは移動できません' });
+      return;
+    }
+    try {
+      moveSourceExclusive(from.absPath, to.absPath);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        res.status(409).json({ success: false, data: null, error: '移動先に同じ名前のファイルがあります' });
+        return;
+      }
+      if (code === 'ENOTDIR' || code === 'EISDIR') {
+        res.status(400).json({ success: false, data: null, error: 'その場所へは移動できません' });
+        return;
+      }
+      res.status(500).json({ success: false, data: null, error: '移動に失敗しました' });
+      return;
+    }
+    res.json({
+      success: true,
+      data: { path: to.relPath, mtime: fs.statSync(to.absPath).mtimeMs },
+      error: null,
+    });
   });
 
   // プロジェクト全体のファイルツリー（Files タブ）

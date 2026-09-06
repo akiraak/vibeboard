@@ -224,3 +224,65 @@ export function writeSourceAtomic(absPath: string, data: string): void {
     throw e;
   }
 }
+
+/**
+ * 親ディレクトリを作ってから **存在しないときだけ** 作る（`wx`）。
+ * 事前の存在確認 + 書き込みだと、その隙間に他所で作られたファイルを
+ * 黙って潰しうるので、作成の排他はカーネル側（`O_EXCL`）に任せる。
+ * 既存なら `EEXIST` が飛ぶ。
+ */
+export function createSourceExclusive(absPath: string, data: string): void {
+  ensureParentDir(absPath);
+  fs.writeFileSync(absPath, data, { encoding: 'utf-8', flag: 'wx' });
+}
+
+/**
+ * 親ディレクトリを用意する。
+ * 途中のセグメントが既にファイルなら `mkdir -p` は `EEXIST` を返すが、これを
+ * そのまま流すと呼び出し側で「同名のファイルが既にある」と区別できない。
+ * 「その場所は掘れない」を表す `ENOTDIR` に寄せてから投げる。
+ */
+function ensureParentDir(absPath: string): void {
+  const dir = path.dirname(absPath);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST' || code === 'ENOTDIR') {
+      const err: NodeJS.ErrnoException = new Error(`ENOTDIR: ${dir}`);
+      err.code = 'ENOTDIR';
+      throw err;
+    }
+    throw e;
+  }
+}
+
+/**
+ * リネーム / 移動。**移動先が既にあれば上書きせずに `EEXIST`**。
+ *
+ * `fs.renameSync` は移動先を黙って上書きするので直接は使わない。
+ * ハードリンクを張ってから元を消す形にすると、既存判定と移動が 1 手で済み、
+ * 「確認してから rename」の隙間が無い。ハードリンクを張れない環境
+ * （別デバイス / 対応していない FS）だけ、存在確認 + rename に落とす。
+ */
+export function moveSourceExclusive(fromAbs: string, toAbs: string): void {
+  ensureParentDir(toAbs);
+  let linked = false;
+  try {
+    fs.linkSync(fromAbs, toAbs);
+    linked = true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw e;
+    // それ以外（EXDEV / EPERM など）は下の代替経路へ
+  }
+  if (linked) {
+    fs.unlinkSync(fromAbs);
+    return;
+  }
+  if (fs.existsSync(toAbs)) {
+    const err: NodeJS.ErrnoException = new Error('EEXIST');
+    err.code = 'EEXIST';
+    throw err;
+  }
+  fs.renameSync(fromAbs, toAbs);
+}

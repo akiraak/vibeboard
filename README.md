@@ -8,28 +8,43 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ <project>             Root  Plans  Specs                     │
+│ <project>             Root  Plans  Specs  Files              │
 ├──────────────┬───────────────────────────────────────────────┤
-│ docs/plans/  │ # TODO                                        │
-│  ├ foo.md    │                                               │
-│  └ bar.md    │ ## 機能開発                                    │
-│ TODO.md      │ - [ ] xxx                                     │
-│ DONE.md      │ - [x] yyy → DONE                              │
+│ 更新日 名前   + 新規 │ # TODO                                 │
+│ docs/plans/  │                                               │
+│  ├ foo.md    │ ## 機能開発                                    │
+│  └ bar.md    │ - [ ] xxx                                     │
+│ TODO.md      │ - [x] yyy → DONE                              │
+│ DONE.md      │                                               │
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
 ## できること
 
-- `docs/plans/` ・ `docs/specs/` 配下の Markdown / HTML をツリーで一覧・閲覧
+- `docs/plans/` ・ `docs/specs/` 配下の Markdown / HTML をツリーで一覧・閲覧・編集
 - ルート直下の `TODO.md` ・ `DONE.md` ・ `CLAUDE.md` ・ `README.md` をプレビュー表示しつつ編集
-  - mtime ベースの楽観ロック付き。外部で先に更新されていた場合は 409 を返し、
-    リロード / 手元維持 / 強制上書き を選べる
-  - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映
+- **Files タブでプロジェクト内のファイルをすべて編集**（テキストエディタと同じ扱い）
+  - 拡張子もディレクトリも問わない。`src/` のコードも `package.json` も同じ画面で開ける
+  - **dotfile も出す**（`.env` を含む）。除外は既定で `.git/` と `node_modules/` だけ
+    （`files.exclude` で足せる）
+  - バイナリ / サイズ上限（1MB）超え / シンボリックリンクは**開けるが読み取り専用**
+  - **改行コードを変えない**。`textarea` は値を LF に潰すので、読み取り時に判定して
+    書き戻しで CRLF へ復元する（変えると差分が全行になるため）
+- 新規作成 / リネーム・移動 / 削除（サイドバーの `+ 新規`、ツールバーの `リネーム` `削除`）
+  - 対象はファイル 1 個だけ。ディレクトリは作成時に親を掘るだけで、移動・削除はしない
+  - 移動先が既にある場合は**上書きせず 409**。作成も同名があれば 409
+- 編集はすべて mtime ベースの楽観ロック付き。外部で先に更新されていた場合は 409 を返し、
+  リロード / 手元維持 / 強制上書き を選べる
+  - 保存は tmp へ書いてから rename（アトミック書き込み）
+  - `fs.watch` + 2 秒ポーリングで**今開いているファイル**の外部変更を検知し、SSE で即時反映
     （プレビュー自動更新／clean 編集は差し替え＋情報バー／dirty 編集は競合警告バー＋差分モーダル）
 - `docs/plans/<file>` ・ `docs/plans/<dir>/` を `docs/plans/archive/` に移動
 - ツールバーの `↻ 再取得` ボタン、または `R` キー単独で手動再取得
 - 起動時、同じ `--root` の vibeboard が既にポートを使っていれば自動で停止して起動し直す
   （別プロジェクトの vibeboard や無関係なプロセスには触れない）
+
+> **注意**: Files タブは `--root` 配下のファイルを **`.env` まで含めて読み書きできる**。
+> vibeboard が `127.0.0.1` バインド固定なのはこのためで、外から届く場所には置かないこと。
 
 ## 必要な前提構造
 
@@ -51,7 +66,10 @@ vibeboard は親プロジェクトに以下があることを前提に動く。
 ```
 
 足りないファイル / ディレクトリは、必要になった時点で自動的に作成される
-（例: アーカイブ操作時の `docs/plans/archive/`）。`docs/specs/` は無くても起動できる。
+（例: アーカイブ操作時の `docs/plans/archive/`、新規作成時の親ディレクトリ）。
+`docs/specs/` は無くても起動できる。
+
+Files タブはこの構造に依存せず、`--root` 配下を（除外を除いて）そのまま並べる。
 
 ## Quick start
 
@@ -243,6 +261,14 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
     ]
   },
 
+  // Files タブ（プロジェクト内の全ファイル）。省略時は { label: 'Files', exclude: ['.git', 'node_modules'] }
+  "files": {
+    "label": "Files",                      // タブの表示名
+    // ツリーから外す**ディレクトリ / ファイル名**。パス区切りやグロブは受けない
+    // （パスのどこかのセグメントが一致したら除外）。指定すると既定を置き換える
+    "exclude": [".git", "node_modules", "dist"]
+  },
+
   // 外部 HTTP プラグインを iframe タブとして差し込む（省略時は無し）。
   // 各エントリは別プロセスのプラグインを指し、vibeboard は中身をプロキシせず
   // baseUrl をクライアントへ渡してブラウザが直接 fetch する（loopback / CORS 前提）。
@@ -281,12 +307,13 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 
 設定ファイル読み込み時に以下を弾く（起動失敗）。
 
-- `categories[].name` が空 / 重複 / `todo`（予約語） / パス区切り文字を含む
+- `categories[].name` が空 / 重複 / `todo`・`files`（予約語） / パス区切り文字を含む
 - `categories[].path` が root の外を指している
 - `editable.files[].name` が `.md` で終わらない / 重複 / パス区切り文字を含む
 - `editable.files[].path` が root の外を指している
 - `categories` または `editable.files` を空配列にしている（省略してデフォルトに戻す）
-- `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・categories）と衝突 / 重複
+- `files.exclude` が配列でない / 要素が空文字 / パス区切り文字（`/` `\\`）や `.` `..` を含む
+- `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・`files`・categories）と衝突 / 重複
 - `customTabs[].baseUrl` が空 / URL として不正 / `http`・`https` 以外 / `?` や `#` を含む
 
 優先順位は `CLI 引数 > 環境変数 > vibeboard.config.json > デフォルト`。

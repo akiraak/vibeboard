@@ -191,6 +191,9 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   position: sticky;
   top: 0;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 8px 6px;
   background: var(--side-bg);
   border-bottom: 1px solid var(--side-border);
@@ -202,7 +205,33 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 
 .sidebar-sort-group {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 4px;
+}
+
+/* サイドバー上端の「+ 新規」。並び順トグルと同じ高さに収める */
+.sidebar-new-btn {
+  flex: none;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-sub);
+  background: transparent;
+  border: 1px solid var(--side-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.sidebar-new-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.sidebar-new-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .sidebar-sort-btn {
@@ -759,6 +788,17 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .todo-actions {
   display: flex;
   gap: 8px;
+}
+
+/* 取り消せない操作（削除）。押し間違いに気付けるよう色で分ける */
+.doc-action-danger {
+  color: #b42318;
+  border-color: #f0c2bd;
+}
+
+.doc-action-danger:hover {
+  background: #fef3f2;
+  border-color: #b42318;
 }
 
 .doc-action-primary {
