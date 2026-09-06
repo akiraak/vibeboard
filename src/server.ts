@@ -4,6 +4,15 @@ import path from 'path';
 import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
+import {
+  MAX_SOURCE_BYTES,
+  applyEol,
+  isEol,
+  isSymlink,
+  readSource,
+  resolveSource,
+  writeSourceAtomic,
+} from './source';
 
 interface TreeFile {
   name: string;
@@ -43,10 +52,15 @@ function extractHtmlTitle(raw: string, fallback: string): string {
   return fallback;
 }
 
+// タイトルを抜けるのは .md / .html だけ。**拡張子を見てから読む**こと。
+// 以前は読んでから判定していたため、対象外の拡張子でも中身を読んで捨てていた。
 function extractTitle(absPath: string, fallback: string): string {
-  const raw = fs.readFileSync(absPath, 'utf-8');
-  if (absPath.endsWith('.md')) return extractMdTitle(raw, fallback);
-  if (absPath.endsWith('.html')) return extractHtmlTitle(raw, fallback);
+  if (absPath.endsWith('.md')) {
+    return extractMdTitle(fs.readFileSync(absPath, 'utf-8'), fallback);
+  }
+  if (absPath.endsWith('.html')) {
+    return extractHtmlTitle(fs.readFileSync(absPath, 'utf-8'), fallback);
+  }
   return fallback;
 }
 
@@ -185,7 +199,9 @@ function isInsideRoot(child: string, root: string): boolean {
 
 export async function startServer(config: VibeboardConfig): Promise<void> {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  // ファイル本文をまるごと JSON で往復させるため、MAX_SOURCE_BYTES (1MB) の中身が
+  // エスケープで膨らんでも収まるだけの余裕を取る。実際の上限は source.ts 側で掛ける。
+  app.use(express.json({ limit: '8mb' }));
 
   // カテゴリと編集対象を name→config の Map に持っておく（O(1) 参照）
   const categoryByName = new Map<string, CategoryConfig>(
@@ -468,6 +484,83 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     }
     const newMtime = fs.statSync(ec.path).mtimeMs;
     res.json({ success: true, data: { mtime: newMtime }, error: null });
+  });
+
+  // === プロジェクト内の任意ファイル（root 相対パス 1 本で指す） ===
+  //
+  // カテゴリや editable の一覧とは独立していて、**root 配下かどうかだけ**が境界。
+  // 判定は source.ts の resolveSource に集約する。
+
+  const sourceParam = (req: Request): string => (req.params[0] as string) || '';
+
+  // 生テキスト + mtime + 改行コード。編集できないものは content: null と理由を返す
+  app.get('/api/source/*', (req: Request, res: Response) => {
+    const resolved = resolveSource(config.root, sourceParam(req));
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(resolved.absPath);
+    } catch {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    if (st.isDirectory()) {
+      res.status(400).json({ success: false, data: null, error: 'ディレクトリは開けません' });
+      return;
+    }
+    try {
+      const data = readSource(resolved.absPath);
+      res.json({ success: true, data: { path: resolved.relPath, ...data }, error: null });
+    } catch {
+      res.status(500).json({ success: false, data: null, error: '読み込みに失敗しました' });
+    }
+  });
+
+  // 保存（mtime 楽観ロック + tmp → rename）。改行コードは eol で復元する
+  app.put('/api/source/*', (req: Request, res: Response) => {
+    const resolved = resolveSource(config.root, sourceParam(req));
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    const body = req.body as { content?: unknown; baseMtime?: unknown; eol?: unknown } | undefined;
+    if (!body || typeof body.content !== 'string' || typeof body.baseMtime !== 'number') {
+      res.status(400).json({ success: false, data: null, error: 'content / baseMtime が不正です' });
+      return;
+    }
+    if (body.eol !== undefined && !isEol(body.eol)) {
+      res.status(400).json({ success: false, data: null, error: 'eol が不正です' });
+      return;
+    }
+    if (!fs.existsSync(resolved.absPath) || !fs.statSync(resolved.absPath).isFile()) {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    // tmp → rename はシンボリックリンク自体を置き換えてしまうため、書き込みは拒否する
+    if (isSymlink(resolved.absPath)) {
+      res.status(403).json({ success: false, data: null, error: 'シンボリックリンクは編集できません' });
+      return;
+    }
+    const currentMtime = fs.statSync(resolved.absPath).mtimeMs;
+    if (currentMtime !== body.baseMtime) {
+      res.status(409).json({ success: false, data: { currentMtime }, error: '外部で更新されています' });
+      return;
+    }
+    const out = applyEol(body.content, isEol(body.eol) ? body.eol : 'lf');
+    if (Buffer.byteLength(out, 'utf-8') > MAX_SOURCE_BYTES) {
+      res.status(413).json({ success: false, data: null, error: 'ファイルが大きすぎます' });
+      return;
+    }
+    try {
+      writeSourceAtomic(resolved.absPath, out);
+    } catch {
+      res.status(500).json({ success: false, data: null, error: '書き込みに失敗しました' });
+      return;
+    }
+    res.json({ success: true, data: { mtime: fs.statSync(resolved.absPath).mtimeMs }, error: null });
   });
 
   // index.html はテンプレ置換しつつ返す（タイトル / クライアント設定の inject）
