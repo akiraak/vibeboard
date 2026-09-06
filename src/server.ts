@@ -167,6 +167,12 @@ function listTree(absDir: string, exts: string[], relPrefix: string = ''): Tree 
   return { files, dirs };
 }
 
+// 絶対パスを root からの相対パスへ直す。クライアントへ渡す識別子はこの形に揃える
+// （絶対パスは出さない。Windows の区切りも '/' に寄せる）。
+function toRootRel(absPath: string, root: string): string {
+  return path.relative(root, absPath).split(path.sep).join('/');
+}
+
 function isSafeName(file: string, ext: string): boolean {
   return !file.includes('..') && !file.includes('/') && !file.includes('\\') && file.endsWith(ext);
 }
@@ -563,19 +569,51 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     res.json({ success: true, data: { mtime: fs.statSync(resolved.absPath).mtimeMs }, error: null });
   });
 
+  // Markdown を HTML 化して返す（root 相対パス）。編集タブとカテゴリのプレビューを
+  // 1 本にまとめるためのもので、素材の相対パス書き換えも従来と同じ処理を通す。
+  app.get('/api/render/*', (req: Request, res: Response) => {
+    const relPath = (req.params[0] as string) || '';
+    const resolved = resolveSource(config.root, relPath);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    if (!relPath.toLowerCase().endsWith('.md')) {
+      res.status(400).json({ success: false, data: null, error: 'Markdown ではありません' });
+      return;
+    }
+    if (!fs.existsSync(resolved.absPath) || !fs.statSync(resolved.absPath).isFile()) {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    const raw = fs.readFileSync(resolved.absPath, 'utf-8');
+    const mtime = fs.statSync(resolved.absPath).mtimeMs;
+    const title = extractMdTitle(raw, path.basename(relPath, '.md'));
+    const md = raw.replace(/^---[\s\S]*?---\n*/, '');
+    const html = rewriteRelativeAssetUrls(marked(md) as string, resolved.absPath, config.root);
+    res.json({ success: true, data: { title, html, mtime }, error: null });
+  });
+
   // index.html はテンプレ置換しつつ返す（タイトル / クライアント設定の inject）
   // 配布物は `vibeboard/src/web/` に生のまま含まれる（tsconfig で除外、package.json の files で同梱）
   const webDir = path.join(__dirname, '..', 'src', 'web');
   const indexHtmlRaw = fs.readFileSync(path.join(webDir, 'index.html'), 'utf-8');
   // クライアント側に出すカテゴリ情報（絶対パスは漏らさない）
+  // path は **root 相対**。クライアントはこれを繋いで /api/source/* を引くので必要になる
+  // （絶対パスは従来どおり出さない）。
   const clientCategories = config.categories.map(c => ({
     name: c.name,
     label: c.label,
     archive: c.archive,
+    path: toRootRel(c.path, config.root),
   }));
   const clientEditable = {
     label: config.editable.label,
-    files: config.editable.files.map(f => ({ name: f.name, label: f.label })),
+    files: config.editable.files.map(f => ({
+      name: f.name,
+      label: f.label,
+      path: toRootRel(f.path, config.root),
+    })),
   };
   // customTabs は baseUrl ごとクライアントへ流す（クライアントが直接 fetch するため）。
   // baseUrl はループバック前提なので秘匿対象ではない。
