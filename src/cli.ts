@@ -19,8 +19,8 @@ function printHelp(): void {
 
 使い方:
   vibeboard [options]              管理画面サーバを起動
-  vibeboard init [options]         親プロジェクトの CLAUDE.md に規約スニペットを追記
-  vibeboard listen [options]       Tasks タブの待ち受け（この画面の Claude Code がタスクを受け取る）
+  vibeboard init [options]         親プロジェクトに規約スニペット（CLAUDE.md）と hooks（.claude/settings.json）を書く
+  vibeboard listen [options]       Tasks タブの待ち受け（hook が使えない環境の逃げ道）
 
 サーバ起動オプション:
   --root <path>     対象プロジェクトのルート (デフォルト: cwd)
@@ -33,6 +33,7 @@ function printHelp(): void {
 init オプション:
   --root <path>     親プロジェクトのルート (デフォルト: cwd)
   --dry-run         書き込まずに変更後の内容をプレビュー表示
+  --no-hooks        .claude/settings.json には触れない（CLAUDE.md だけ）
   --help, -h        init のヘルプを表示
 
 listen オプション:
@@ -51,16 +52,22 @@ listen オプション:
 }
 
 function printInitHelp(): void {
-  console.log(`vibeboard init - 親プロジェクトの CLAUDE.md に vibeboard 規約スニペットを追記
+  console.log(`vibeboard init - 親プロジェクトに vibeboard の規約スニペットと hooks を書く
 
 挙動:
+  CLAUDE.md
   - <root>/CLAUDE.md が存在しない場合: 新規作成してスニペットを書き込む
   - 既存ファイルに vibeboard マーカーがある場合: マーカー間を最新スニペットで置換
   - 既存ファイルにマーカーが無い場合: ファイル末尾にマーカー付きで追記
+  .claude/settings.json（Tasks タブの送り先の登録）
+  - SessionStart / SessionEnd に scripts/session-hook.mjs を呼ぶ hook を併合する
+  - 他の hooks は残す。vibeboard の項目だけを置き換えるので何度流しても増えない
+  - 既に開いている Claude Code のセッションには効かない（起動し直すと登録される）
 
 オプション:
   --root <path>     親プロジェクトのルート (デフォルト: cwd / VIBEBOARD_ROOT)
   --dry-run         書き込まずに、書き込まれる内容をプレビュー表示する
+  --no-hooks        .claude/settings.json には触れない（CLAUDE.md だけ）
   --help, -h        このヘルプを表示
 `);
 }
@@ -84,11 +91,12 @@ if (sub === 'init') {
     process.exit(0);
   }
   const dryRun = initArgs.includes('--dry-run');
+  const hooks = !initArgs.includes('--no-hooks');
   // resolveConfig で --root / VIBEBOARD_ROOT を解決する (port/title は捨てる)
-  const passthrough = initArgs.filter(a => a !== '--dry-run');
+  const passthrough = initArgs.filter(a => a !== '--dry-run' && a !== '--no-hooks');
   try {
     const { config } = resolveConfig(passthrough);
-    runInit({ root: config.root, dryRun });
+    runInit({ root: config.root, dryRun, hooks });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[vibeboard init] 失敗しました: ${msg}`);
@@ -104,7 +112,11 @@ function failToStart(err: unknown): never {
 }
 
 function printListenHelp(): void {
-  console.log(`vibeboard listen - Tasks タブの待ち受け（この画面の Claude Code がタスクを受け取る）
+  console.log(`vibeboard listen - Tasks タブの待ち受け（hook が使えない環境の逃げ道）
+
+  既定の経路は \`vibeboard init\` が書く SessionStart hook（セッションが自分の受信口を登録し、
+  vibeboard がそこへ投函する）。それが使えないとき（古い Claude Code、hooks を書きたくない、など）に
+  この待ち受けを使う。
 
 挙動:
   - vibeboard の /api/tasks/inbox を購読し、届いたタスクを 1 行の JSON で標準出力に出す

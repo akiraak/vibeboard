@@ -1488,3 +1488,44 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   color: var(--text-mute);
   padding: 8px 0;
 }
+
+/* Tasks タブ: 送り先の案内と投函の状態 */
+.task-targets-note { margin: -4px 0 12px; }
+.task-queue { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
+.task-queue h2 { font-size: 13px; font-weight: 600; color: var(--text-mute); margin: 0 0 6px; }
+.task-queue-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 13px;
+}
+.task-queue-item:last-child { border-bottom: none; }
+.task-queue-state {
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.task-queue-state.posted { color: #1a7f37; border-color: #aceebb; background: #dafbe1; }
+.task-queue-state.waiting { color: #9a6700; border-color: #eac54f; background: #fff8c5; }
+.task-queue-state.failed { color: #b42318; border-color: #f0c2bd; background: #ffebe9; }
+.task-queue-text { flex: 1 1 auto; min-width: 200px; word-break: break-word; }
+.task-queue-time { color: var(--text-mute); font-size: 12px; white-space: nowrap; }
+.task-queue-item button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.task-queue-item button:disabled { opacity: 0.5; cursor: default; }
+.task-queue-err { flex-basis: 100%; color: #b42318; font-size: 12px; }

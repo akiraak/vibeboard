@@ -5,6 +5,17 @@ import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import { startSidecars, stopSidecars } from './sidecar';
+import { isOurHook } from './init';
+import {
+  ListSessionsResult,
+  QueueItem,
+  Registration,
+  Registry,
+  TaskQueue,
+  isUnder,
+  listClaudeSessions,
+  postToInbox,
+} from './tasks';
 import { buildExplainPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
 import {
   MAX_SOURCE_BYTES,
@@ -739,13 +750,16 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     res.json({ success: true, data: { ...tree, mtime }, error: null });
   });
 
-  // === Tasks タブ（TODO.md のタスクを、待ち受けている Claude Code へ渡す） ===
+  // === Tasks タブ（TODO.md のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡す） ===
   //
-  // 端末のペインを特定して打ち込むのは WSL では当てにならない（cwd が同じだけのシェルへ
-  // 誤送信する）ので、**待ち受けている画面へ名前で配る**。画面は `vibeboard listen --name <名前>`
-  // で `/api/tasks/inbox` を購読し、届いた文面をそのセッションが実行する。
+  // 送り先は 2 系統:
+  //   1. **セッション**（既定）: `claude agents --json` で見つけ、SessionStart hook（scripts/session-hook.mjs）が
+  //      登録してきた受信口ソケットへ vibeboard が直接投函する（src/tasks.ts）。人が待ち受けを起動する必要は無い
+  //   2. **listen**（互換・逃げ道）: `vibeboard listen --name <名前>` が `/api/tasks/inbox` を購読し、
+  //      届いた文面をその画面の Claude Code が実行する
   // **文面はここで TODO.md から組む**（クライアントからは id と決め打ちの値しか受けない）。
-  // 送り先が不在なら名前あてに溜め、同じ名前で繋ぎ直したときに渡す。
+  // セッションあての文面はキュー（tmp の JSON）に積み、送り先が登録済みなら即投函、未登録なら登録が来た時点で投函する。
+  // listen あては名前で配り、不在なら名前あてに溜めて、同じ名前で繋ぎ直したときに渡す。
   type TaskItem = { id: string; text: string; kind: 'run' | 'explain'; prompt: string; at: number };
   const taskWindows = new Map<string, Response>();
   const taskPending = new Map<string, TaskItem[]>();
@@ -787,8 +801,228 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     return false;
   };
 
-  app.get('/api/tasks/windows', (_req: Request, res: Response) => {
-    res.json({ success: true, data: { windows: [...taskWindows.keys()] }, error: null });
+  // --- セッション: 発見（claude agents）・登録（hook）・投函（ソケット）・キュー（tmp） ---
+  const registry = new Registry();
+  const queue = new TaskQueue(config.root);
+  const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+  const SESSIONS_TTL_MS = 5000;
+  const emptySessions: ListSessionsResult = { ok: false, sessions: [], error: null };
+  const sessionsCache: { at: number; result: ListSessionsResult } = { at: 0, result: emptySessions };
+  let sessionsInflight: Promise<ListSessionsResult> | null = null;
+  // `claude agents --json` は起動に時間が掛かるので 5 秒は使い回す。同時に来た要求は 1 回にまとめる
+  const getSessions = (): Promise<ListSessionsResult> => {
+    if (Date.now() - sessionsCache.at < SESSIONS_TTL_MS) return Promise.resolve(sessionsCache.result);
+    if (sessionsInflight) return sessionsInflight;
+    sessionsInflight = listClaudeSessions(config.root).then(result => {
+      sessionsCache.at = Date.now();
+      sessionsCache.result = result;
+      sessionsInflight = null;
+      // claude agents が読めたのに載っていない登録は、SessionEnd を出せずに終わったセッション。
+      // 登録直後は一覧に載る前かもしれないので、少し待ってから外す
+      if (result.ok) {
+        const live = new Set(result.sessions.map(s => s.sessionId));
+        for (const r of registry.list()) {
+          if (!live.has(r.sessionId) && Date.now() - r.at > 15000) registry.unregister(r.sessionId);
+        }
+      }
+      return result;
+    });
+    return sessionsInflight;
+  };
+  const isLoopback = (req: Request): boolean => {
+    const a = req.socket.remoteAddress ?? '';
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  };
+  // この root の .claude/settings.json に vibeboard の hook が入っているか（画面の案内に使うだけ）
+  const hooksInstalled = (): boolean => {
+    try {
+      const raw = fs.readFileSync(path.join(config.root, '.claude', 'settings.json'), 'utf-8');
+      const parsed = JSON.parse(raw) as { hooks?: { SessionStart?: unknown } };
+      const arr = parsed?.hooks?.SessionStart;
+      return Array.isArray(arr) && arr.some(g => {
+        const hooks = (g as { hooks?: unknown })?.hooks;
+        return Array.isArray(hooks) && hooks.some(isOurHook);
+      });
+    } catch {
+      return false;
+    }
+  };
+
+  type Target = {
+    id: string;
+    name: string;
+    kind: 'session' | 'listen';
+    status: string;
+    registered: boolean;
+    sessionKind: 'interactive' | 'background' | null;
+    shortId: string | null;
+    waitingFor: string | null;
+    cwd: string;
+  };
+  const buildTargets = async (): Promise<{ targets: Target[]; agents: { ok: boolean; error: string | null } }> => {
+    const result = await getSessions();
+    const seen = new Set<string>();
+    const targets: Target[] = [];
+    for (const s of result.sessions) {
+      seen.add(s.sessionId);
+      targets.push({
+        id: s.sessionId,
+        name: s.name,
+        kind: 'session',
+        status: s.status,
+        registered: registry.has(s.sessionId),
+        sessionKind: s.kind,
+        shortId: s.shortId,
+        waitingFor: s.waitingFor,
+        cwd: toRootRel(s.cwd, config.root) || '.',
+      });
+    }
+    // claude が読めない環境でも、hook が登録してきたセッションは出す
+    for (const r of registry.list()) {
+      if (seen.has(r.sessionId)) continue;
+      targets.push({
+        id: r.sessionId,
+        name: r.sessionId.slice(0, 8),
+        kind: 'session',
+        status: 'unknown',
+        registered: true,
+        sessionKind: null,
+        shortId: null,
+        waitingFor: null,
+        cwd: toRootRel(r.cwd, config.root) || '.',
+      });
+    }
+    for (const name of taskWindows.keys()) {
+      targets.push({
+        id: name, name, kind: 'listen', status: 'listening', registered: true,
+        sessionKind: null, shortId: null, waitingFor: null, cwd: '.',
+      });
+    }
+    return { targets, agents: { ok: result.ok, error: result.error } };
+  };
+
+  const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+  const describePostError = (err: unknown): string => {
+    const e = err as NodeJS.ErrnoException | undefined;
+    switch (e?.code) {
+      case 'ENOENT': return '受信口のソケットがありません（セッションが終わっています）';
+      case 'ECONNREFUSED': return '受信口に接続を拒否されました（セッションが終わっています）';
+      case 'EACCES': return '受信口に接続する権限がありません';
+      case 'ETIMEDOUT': return '受信口への書き込みが時間切れになりました';
+      default: return e?.message ?? String(err);
+    }
+  };
+  const lastPostAt = new Map<string, number>();
+  const postItem = async (item: QueueItem, reg: Registration): Promise<void> => {
+    // 1 セッションへの連投は 1 秒に 1 件（受信側の burst 制限に当たらないため）
+    const wait = (lastPostAt.get(reg.sessionId) ?? 0) + 1000 - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastPostAt.set(reg.sessionId, Date.now());
+    try {
+      await postToInbox(reg.socket, item.prompt, { token: reg.token });
+      queue.update(item.id, 'posted');
+    } catch (err) {
+      queue.update(item.id, 'failed', describePostError(err));
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ECONNREFUSED') registry.unregister(reg.sessionId);
+    }
+  };
+  // そのセッションあての「待ち」を順に投函する。登録が無ければ何もしない（登録が来たときにまた呼ばれる）
+  const draining = new Set<string>();
+  const drain = async (sessionId: string): Promise<void> => {
+    if (draining.has(sessionId)) return;
+    draining.add(sessionId);
+    try {
+      for (;;) {
+        const reg = registry.get(sessionId);
+        if (!reg) return;
+        const next = queue.list().find(i => i.state === 'waiting' && i.sessionId === sessionId);
+        if (!next) return;
+        await postItem(next, reg);
+      }
+    } finally {
+      draining.delete(sessionId);
+    }
+  };
+  const sendToSession = async (sessionId: string, item: TaskItem): Promise<QueueItem> => {
+    const queued = queue.add({ taskId: item.id, text: item.text, kind: item.kind, prompt: item.prompt, sessionId });
+    // 登録済みならその場で投函して結果を返す（応答は長くても 4 秒。続きは裏で進む）
+    await Promise.race([drain(sessionId), sleep(4000)]);
+    return queue.get(queued.id) ?? queued;
+  };
+  // prompt は返さない（ブラウザで使わず、大きいだけ）
+  const publicItem = (i: QueueItem) => ({
+    id: i.id, taskId: i.taskId, text: i.text, kind: i.kind, sessionId: i.sessionId,
+    state: i.state, at: i.at, updatedAt: i.updatedAt, error: i.error,
+  });
+  // async ハンドラの取りこぼしを 500 にする（express 4 は Promise を見ない）
+  const wrap = (fn: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response): void => {
+    fn(req, res).catch(err => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!res.headersSent) res.status(500).json({ success: false, data: null, error: msg });
+    });
+  };
+
+  app.get('/api/tasks/windows', wrap(async (_req, res) => {
+    const { targets, agents } = await buildTargets();
+    res.json({
+      success: true,
+      data: {
+        targets,
+        agents,
+        hooksInstalled: hooksInstalled(),
+        windows: targets.filter(t => t.kind === 'listen').map(t => t.name),
+      },
+      error: null,
+    });
+  }));
+
+  // hook（scripts/session-hook.mjs）からの登録。同じ機械の同じユーザーからしか来ない前提だが、
+  // ループバック以外と root の外のセッションは断る。token はメモリにだけ持つ
+  app.post('/api/tasks/register', (req: Request, res: Response) => {
+    if (!isLoopback(req)) {
+      res.status(403).json({ success: false, data: null, error: 'ループバックからだけ受け付けます' });
+      return;
+    }
+    const body = req.body as Record<string, unknown> | undefined;
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+    if (!SESSION_ID_RE.test(sessionId)) {
+      res.status(400).json({ success: false, data: null, error: 'sessionId が不正です' });
+      return;
+    }
+    const cwd = typeof body?.cwd === 'string' && body.cwd ? path.resolve(body.cwd) : '';
+    if (!cwd || !isUnder(config.root, cwd)) {
+      res.status(403).json({ success: false, data: null, error: 'このプロジェクトの外のセッションは登録できません' });
+      return;
+    }
+    const socket = typeof body?.socket === 'string' ? body.socket : '';
+    if (!socket || !path.isAbsolute(socket) || socket.length > 512) {
+      res.status(400).json({ success: false, data: null, error: 'socket が不正です' });
+      return;
+    }
+    const token = typeof body?.token === 'string' && body.token && body.token.length <= 256 ? body.token : null;
+    const pid = typeof body?.pid === 'number' && Number.isFinite(body.pid) ? body.pid : null;
+    registry.register({ sessionId, cwd, socket, token, pid, at: Date.now() });
+    sessionsCache.at = 0; // 次の一覧で拾い直す
+    const waiting = queue.list().filter(i => i.state === 'waiting' && i.sessionId === sessionId).length;
+    void drain(sessionId); // 待っていたぶんを届ける
+    res.json({ success: true, data: { registered: true, waiting }, error: null });
+  });
+
+  app.post('/api/tasks/unregister', (req: Request, res: Response) => {
+    if (!isLoopback(req)) {
+      res.status(403).json({ success: false, data: null, error: 'ループバックからだけ受け付けます' });
+      return;
+    }
+    const body = req.body as Record<string, unknown> | undefined;
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+    if (!SESSION_ID_RE.test(sessionId)) {
+      res.status(400).json({ success: false, data: null, error: 'sessionId が不正です' });
+      return;
+    }
+    const removed = registry.unregister(sessionId);
+    sessionsCache.at = 0;
+    res.json({ success: true, data: { registered: false, removed }, error: null });
   });
 
   app.get('/api/tasks/inbox', (req: Request, res: Response) => {
@@ -814,8 +1048,8 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     });
   });
 
-  app.post('/api/tasks/run', (req: Request, res: Response) => {
-    const body = req.body as { id?: unknown; windowId?: unknown; kind?: unknown } | undefined;
+  app.post('/api/tasks/run', wrap(async (req, res) => {
+    const body = req.body as { id?: unknown; windowId?: unknown; sessionId?: unknown; kind?: unknown } | undefined;
     const id = typeof body?.id === 'string' ? body.id : '';
     if (!id) {
       res.status(400).json({ success: false, data: null, error: 'id が不正です' });
@@ -842,14 +1076,65 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       res.json({ success: true, data: { kind, routedTo: windowId, connected }, error: null });
       return;
     }
-    // 送り先が未指定: つないでいる画面が 1 つならそこへ。0 個・複数個は選ばせる
-    const names = [...taskWindows.keys()];
-    if (names.length === 1) {
-      deliverToWindow(names[0], item);
-      res.json({ success: true, data: { kind, routedTo: names[0], connected: true }, error: null });
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+    if (sessionId) {
+      if (!SESSION_ID_RE.test(sessionId)) {
+        res.status(400).json({ success: false, data: null, error: 'sessionId が不正です' });
+        return;
+      }
+      const queued = await sendToSession(sessionId, item);
+      res.json({
+        success: true,
+        data: { kind, routedTo: sessionId, item: publicItem(queued), registered: registry.has(sessionId) },
+        error: null,
+      });
       return;
     }
-    res.json({ success: true, data: { kind, routedTo: null, connected: false, windows: names }, error: null });
+    // 送り先が未指定: 今すぐ送れる先が 1 つならそこへ。0 個・複数個は選ばせる
+    const { targets } = await buildTargets();
+    const candidates = targets.filter(t => t.kind === 'listen' || t.registered);
+    if (candidates.length === 1) {
+      const t = candidates[0];
+      if (t.kind === 'listen') {
+        deliverToWindow(t.name, item);
+        res.json({ success: true, data: { kind, routedTo: t.name, connected: true }, error: null });
+        return;
+      }
+      const queued = await sendToSession(t.id, item);
+      res.json({ success: true, data: { kind, routedTo: t.id, item: publicItem(queued), registered: true }, error: null });
+      return;
+    }
+    res.json({
+      success: true,
+      data: { kind, routedTo: null, connected: false, targets, windows: [...taskWindows.keys()] },
+      error: null,
+    });
+  }));
+
+  app.get('/api/tasks/queue', (_req: Request, res: Response) => {
+    res.json({ success: true, data: { items: queue.list().map(publicItem) }, error: null });
+  });
+
+  app.post('/api/tasks/retry', wrap(async (req, res) => {
+    const body = req.body as { queueId?: unknown } | undefined;
+    const queueId = typeof body?.queueId === 'string' ? body.queueId : '';
+    const item = queueId ? queue.retry(queueId) : undefined;
+    if (!item) {
+      res.status(404).json({ success: false, data: null, error: 'その項目はキューにありません' });
+      return;
+    }
+    await Promise.race([drain(item.sessionId), sleep(4000)]);
+    res.json({ success: true, data: { item: publicItem(queue.get(queueId) ?? item) }, error: null });
+  }));
+
+  app.post('/api/tasks/dismiss', (req: Request, res: Response) => {
+    const body = req.body as { queueId?: unknown } | undefined;
+    const queueId = typeof body?.queueId === 'string' ? body.queueId : '';
+    if (!queueId || !queue.dismiss(queueId)) {
+      res.status(404).json({ success: false, data: null, error: 'その項目はキューにありません' });
+      return;
+    }
+    res.json({ success: true, data: {}, error: null });
   });
 
   app.post('/api/tasks/delete', (req: Request, res: Response) => {

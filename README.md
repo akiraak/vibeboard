@@ -30,14 +30,19 @@
     （相手のタスクは `「文面」`、プラン / 仕様は Markdown リンク）。引けない相手は「見つかりません」と出すだけで本文は消えない
   - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Files タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
-- **Tasks タブで `TODO.md` のタスクを選び、待ち受けている Claude Code の画面へ渡して実行**
+- **Tasks タブで `TODO.md` のタスクを選び、このプロジェクトで動いている Claude Code のセッションへ渡して実行**
   - ボタンは 3 つ。`実行`（こなして DONE.md へ移す）/ `説明`（変更させず意図・進め方・影響を説明させる）/
     `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
-  - 受け取る側の Claude Code の画面で **`vibeboard listen --name <画面の名前>`** を回しておく。
-    Claude Code がその出力（1 タスク = 1 行の JSON）を監視して、その画面で実行する
-  - 送り先は**名前で選ぶ**ので取り違えない。不在中のぶんは名前あてに溜め、つながったら渡す
+  - 送り先は **`claude agents --json` の一覧から選ぶ**（名前・実行中 / 待機中・登録済みかどうか）。人が待ち受けを起動しなくてよい
+  - 届け方は **セッションの受信口（Unix ソケット）への投函**。セッションは起動時の SessionStart hook
+    （`vibeboard init` が `.claude/settings.json` に書く）で自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を書く。
+    受け取った側では、待機中なら新しいターンが始まり、実行中なら tool 呼び出しの合間に読まれる（承認もその画面で答える）
+  - 送り先が未登録でも受け付けて **待ち** に積み、登録が来た時点で投函する。状態（待ち / 投函済み / 失敗）は画面に出て、
+    失敗は再送できる。キューは tmp の JSON なので vibeboard を再起動しても消えない
+  - hook が使えない環境（古い Claude Code、hooks を書きたくない）では **`vibeboard listen --name <画面の名前>`** を回す。
+    その名前が送り先に `listen` として出て、届いた文面（1 タスク = 1 行の JSON）をその画面の Claude Code が実行する
   - 文面はサーバが TODO.md から組む（ブラウザからは id と決め打ちの値しか受けない）。
-    バックグラウンドで別セッションは起こさない（承認もその画面でそのまま答える）
+    バックグラウンドで別セッションは起こさない。仕組みの詳細は [Tasks タブの仕組み](#tasks-タブの仕組み)
 - **Files タブでプロジェクト内のファイルをすべて編集**（テキストエディタと同じ扱い）
   - 拡張子もディレクトリも問わない。`src/` のコードも `package.json` も同じ画面で開ける
   - **dotfile も出す**（`.env` を含む）。除外は既定で `.git/` と `node_modules/` だけ
@@ -182,18 +187,39 @@ npm run sample
 `npm run sample:dev` だと ts-node で起動するのでビルド不要。
 任意の別プロジェクトを開きたい場合は `node dist/cli.js --root /path/to/project` で `--root` を直接渡す。
 
-## CLAUDE.md にスニペットを書く
+## CLAUDE.md にスニペットを書く（`init`）
 
 `CLAUDE.md` に AI エージェント向けの規約を入れたいときは、初回だけ `init` を流す。
 vendor 済みの `vibeboard/` から、親プロジェクトを `--root` に指定して実行する。
 
 ```bash
-node vibeboard/dist/cli.js init --root .            # 親プロジェクトの CLAUDE.md にスニペットを追記
+node vibeboard/dist/cli.js init --root .            # CLAUDE.md にスニペット ＋ .claude/settings.json に hooks
 node vibeboard/dist/cli.js init --root . --dry-run  # 書き込まずに変更後の内容をプレビュー
+node vibeboard/dist/cli.js init --root . --no-hooks # CLAUDE.md だけ（.claude/settings.json には触れない）
 ```
 
-`init` は `<!-- vibeboard:begin -->` ～ `<!-- vibeboard:end -->` のマーカーで囲って
-書き込むので、何度流しても多重追記にはならない（マーカー内が最新スニペットに置換される）。
+`init` は 2 つのファイルに書く。どちらも何度流しても増えない。
+
+- `CLAUDE.md`: `<!-- vibeboard:begin -->` ～ `<!-- vibeboard:end -->` のマーカーで囲って書き込む（マーカー内が最新スニペットに置換される）
+- `.claude/settings.json`: Tasks タブの送り先の登録に使う **SessionStart / SessionEnd の hook** を併合する。
+  他の hooks は残し、コマンドが `scripts/session-hook.mjs` を指す項目だけを自分のものとして置き換える。
+  JSON が壊れているときは上書きせずに止まる。**既に開いている Claude Code のセッションには効かない**（起動し直すと登録される）
+
+`init` に `.claude/settings.json` を触らせたくないときは `--no-hooks` を付け、必要なら次を手で貼る
+（vibeboard を `vibeboard/` 以外に置いたときはパスを合わせる）:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/vibeboard/scripts/session-hook.mjs\" SessionStart", "async": true }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/vibeboard/scripts/session-hook.mjs\" SessionEnd", "timeout": 3 }] }
+    ]
+  }
+}
+```
 
 ## CLI 引数
 
@@ -202,8 +228,8 @@ vendor 済みの `vibeboard/` 内で `node dist/cli.js ...` として呼び出�
 
 ```
 vibeboard [options]              管理画面サーバを起動
-vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペットを追記
-vibeboard listen [options]       Tasks タブの待ち受け（この画面の Claude Code がタスクを受け取る）
+vibeboard init [options]         親プロジェクトに規約スニペット（CLAUDE.md）と hooks（.claude/settings.json）を書く
+vibeboard listen [options]       Tasks タブの待ち受け（hook が使えない環境の逃げ道）
 ```
 
 サーバ起動オプション:
@@ -223,9 +249,10 @@ vibeboard listen [options]       Tasks タブの待ち受け（この画面の C
 | ------------------ | -------------------------------------------------------------------- |
 | `--root <path>`    | 親プロジェクトのルート (デフォルト: `cwd` / `VIBEBOARD_ROOT`)        |
 | `--dry-run`        | 書き込まずに、書き込まれる内容をプレビュー表示                       |
+| `--no-hooks`       | `.claude/settings.json` には触れない（`CLAUDE.md` だけ）              |
 | `--help`, `-h`     | `init` のヘルプを表示                                                |
 
-`listen` オプション（Tasks タブの待ち受け。受け取る側の Claude Code の画面で回す）:
+`listen` オプション（Tasks タブの待ち受け。既定の経路は hook。hook が使えないとき、受け取る側の Claude Code の画面で回す）:
 
 | オプション         | 説明                                                                 |
 | ------------------ | -------------------------------------------------------------------- |
@@ -403,6 +430,37 @@ $ ./run-vibeboard.sh
 - **iframe からの遷移**: iframe 内から親の別 item へ移りたいときは
   `parent.postMessage({ type: 'vb-nav', hash: '<tab>/<id>' }, '*')` を送ると vibeboard がハッシュを書き換える。
 
+## Tasks タブの仕組み
+
+Tasks タブは、`TODO.md` のタスクから組んだ文面を **Claude Code のセッションの受信口へ vibeboard が直接投函する**。
+人が待ち受けを起動する必要は無い。使っている Claude Code 側の機能は次の 3 つ
+（[cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) /
+[hooks](https://code.claude.com/docs/en/hooks) / `claude agents --json`。v2.1.224 以降）。
+
+| 段階 | 使うもの | vibeboard 側 |
+| --- | --- | --- |
+| 送り先の発見 | `claude agents --json --cwd <root>`（対話セッションも background も返る） | `GET /api/tasks/windows`。5 秒は使い回す。`claude` が PATH に無ければ登録だけで一覧を作る |
+| 所在の登録 | SessionStart hook に渡る `CLAUDE_CODE_MESSAGING_SOCKET` / `CLAUDE_CODE_MESSAGING_TOKEN` | `scripts/session-hook.mjs` が `POST /api/tasks/register`。SessionEnd で `unregister`。token はメモリにだけ持つ |
+| 配送 | 受信口（Unix ソケット）に `{"type":"auth",...}` と `{"type":"user","message":{"role":"user","content":...}}` を 1 行ずつ | `src/tasks.ts` の `postToInbox`。1 セッションへは 1 秒に 1 件 |
+
+流れ:
+
+1. `vibeboard init` が `.claude/settings.json` に hook を書く（1 回だけ。コミットしてよい）
+2. そのプロジェクトで Claude Code を起動すると、hook がセッションの受信口を vibeboard に登録する（vibeboard が落ちていれば 1 秒で諦めて何もしない）
+3. Tasks タブで送り先を選んで `実行` / `説明` を押すと、文面がキュー（`$TMPDIR/vibeboard-tasks-<root の hash>.json`）に積まれ、
+   登録済みならその場で投函される。未登録なら「待ち」のまま、登録が来た時点で投函する（5 分で「失敗」）
+4. 受け取ったセッションでは、待機中なら新しいターンが始まり、実行中なら tool 呼び出しの合間に読まれる。
+   届いた文面は他セッションからのものとして扱われ、承認の代わりにはならず、`/` コマンドも実行されない。承認はその画面で答える
+
+制約と注意:
+
+- **受信側が `bypassPermissions` だと、届いた文面は承認ダイアログで保留される**（Claude Code の既定の受け入れ規則。`crossSessionInbound` を `accept` にすれば通る）
+- 同じ OS ユーザーなら誰でもその受信口に書ける。vibeboard は `127.0.0.1` 固定で、`register` はループバックからしか受けず、
+  文面はサーバが TODO.md から組む（ブラウザから任意の文面は送れない）
+- 投函の書式は Claude Code 本体の案内に依る（公式ドキュメントは auth 行だけを載せている）。版が変わって届かなくなったら、
+  キューに「失敗」として出るので `vibeboard listen` に切り替える
+- 実行の成否は追わない（完了は TODO.md から消えたかで分かる）
+
 ## 親プロジェクトの `CLAUDE.md` に追記すべきスニペット
 
 `node vibeboard/dist/cli.js init --root .` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
@@ -425,8 +483,10 @@ node vibeboard/dist/cli.js --root .
 - `Files` タブでプロジェクト内のファイル（`TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` を含む）をプレビュー表示・編集できる。`TODO.md` はツリー表示つき
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
-- `Tasks` タブで `TODO.md` のタスクを、待ち受けている Claude Code の画面へ渡して実行できる（実行 / 説明 / 削除）。
-  受け取る側の Claude Code の画面で `node vibeboard/dist/cli.js listen --name <画面の名前>` を回しておく
+- `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / 説明 / 削除）。
+  送り先は `claude agents` の一覧から選ぶ。セッションは起動時の hook（`vibeboard init` が `.claude/settings.json` に書く）で
+  自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を投函する。hook が使えない環境では
+  `node vibeboard/dist/cli.js listen --name <画面の名前>` を回す
 - ローカル開発専用（本番管理画面とは独立）
 - ポート変更は `--port` または `VIBEBOARD_PORT` 環境変数で指定可能
 
@@ -504,6 +564,23 @@ WSL2 では `fs.watch` がホスト側のファイル変更を拾わないこと
 絶対パスで指定するか、目的のプロジェクトに `cd` してから引数なしで起動する。
 シンボリックリンクは `fs.realpath` で解決した実体が `--root` 配下に収まるかを
 チェックしているので、ルート外を指すリンクはたどれない（仕様）。
+
+### Tasks タブの送り先にセッションが出ない / 「未登録」のまま
+
+- 一覧の元は `claude agents --json`。vibeboard を起動したシェルの PATH に `claude` が無いと一覧が作れない
+  （画面に「claude agents が読めません」と出る）。その場合でも hook が登録したセッションは出る
+- 「未登録」は hook が入る前に起動したセッション。`node vibeboard/dist/cli.js init --root .` を流してから
+  Claude Code を起動し直す。`.claude/settings.json` を確認して、`SessionStart` に `session-hook.mjs` があるかを見る
+- hook は vibeboard の port を `VIBEBOARD_PORT` → `vibeboard.config.json` の `port` → 3010 の順で決める。
+  `--port` だけで別ポートにしていると届かないので、設定ファイルか環境変数に書く
+- どうしても出なければ、その画面で `node vibeboard/dist/cli.js listen --name <名前>` を回す（`listen` として出る）
+
+### 投函済みなのに届かない
+
+- 受信側が `bypassPermissions`（`--dangerously-skip-permissions`）だと承認ダイアログで保留になる。その画面で承認する
+- Claude Code が v2.1.224 より古いと受信口が無い。`claude --version` で確認する
+- Claude Code の版が上がって書式が変わった可能性。`/status` の `Peer address` にあるソケットへ手で 1 行送って確かめられる:
+  `echo '{"type":"user","message":{"role":"user","content":"届いた？"}}' | nc -U <ソケットのパス>`
 
 ### `init` を流したくない / `CLAUDE.md` に手を入れたくない
 

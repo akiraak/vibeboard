@@ -2282,12 +2282,12 @@ function refreshSidebarConflictBadge() {
   });
 }
 
-// === Tasks タブ（TODO.md のタスクを、待ち受けている Claude Code へ渡す） ===
+// === Tasks タブ（TODO.md のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡す） ===
 //
 // サイドバー = TODO.md のタスク一覧（GET /api/todo/TODO.md。ツリーと同じ解釈）。
-// 詳細 = 部分木・送り先の画面・実行 / 説明 / 削除。
-// 実行・説明は POST /api/tasks/run で待ち受け（inbox）へ渡し、その画面のセッションが実行する。
-// 削除は POST /api/tasks/delete で、サーバが TODO.md からその部分木の行だけを外す。
+// 詳細 = 部分木・送り先（セッション / listen）・実行 / 説明 / 削除・投函の状態。
+// 実行・説明は POST /api/tasks/run。送り先がセッションならサーバがその受信口へ投函し（キューに積む）、
+// listen なら待ち受け（inbox）へ渡す。削除は POST /api/tasks/delete で、サーバが TODO.md から部分木の行だけを外す。
 // **文面はサーバが組む**。ここから送るのは id と決め打ちの値だけ。
 
 const TASKS_TODO_PATH = 'TODO.md';
@@ -2411,28 +2411,139 @@ async function postTasks(url, body) {
   return json.data;
 }
 
-async function loadTaskWindows(sel) {
+function mkEl(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+const TASK_STATUS_LABEL = {
+  busy: '実行中', working: '実行中', idle: '待機中', blocked: '承認待ち', listening: 'listen', unknown: '状態不明',
+};
+function describeTarget(t) {
+  if (t.kind === 'listen') return `${t.name}（listen）`;
+  const parts = [TASK_STATUS_LABEL[t.status] || t.status];
+  if (t.sessionKind === 'background') parts.push('background');
+  parts.push(t.registered ? '登録済み' : '未登録');
+  if (t.cwd && t.cwd !== '.') parts.push(t.cwd);
+  return `${t.name}（${parts.join('・')}）`;
+}
+function targetValue(t) { return `${t.kind}:${t.id}`; }
+function parseTargetValue(v) {
+  const m = /^(session|listen):(.+)$/.exec(v || '');
+  return m ? { kind: m[1], id: m[2] } : null;
+}
+
+// 送り先の一覧（GET /api/tasks/windows = claude agents ＋ hook の登録 ＋ listen）。呼び出し側が 5 秒おきに取り直す
+async function loadTaskTargets(sel, note) {
   const prev = sel.value;
+  let data;
   try {
-    const data = await fetchJson('/api/tasks/windows');
-    const names = Array.isArray(data.windows) ? data.windows : [];
-    sel.innerHTML = '';
-    if (names.length === 0) {
-      const o = document.createElement('option');
-      o.value = '';
-      o.textContent = '(待ち受けている画面がありません)';
-      sel.appendChild(o);
-      return;
-    }
-    for (const n of names) {
-      const o = document.createElement('option');
-      o.value = n;
-      o.textContent = n;
-      sel.appendChild(o);
-    }
-    if (names.includes(prev)) sel.value = prev;
+    data = await fetchJson('/api/tasks/windows');
   } catch {
-    // 取れなければ前の選択のまま
+    return null; // 取れなければ前の選択のまま
+  }
+  const targets = Array.isArray(data.targets) ? data.targets : [];
+  sel.innerHTML = '';
+  if (targets.length === 0) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = '(このプロジェクトで動いている Claude Code のセッションがありません)';
+    sel.appendChild(o);
+  }
+  for (const t of targets) {
+    const o = document.createElement('option');
+    o.value = targetValue(t);
+    o.textContent = describeTarget(t);
+    if (t.kind === 'session' && !t.registered) o.title = 'hook を入れる前に起動したセッション。起動し直すと登録されます';
+    sel.appendChild(o);
+  }
+  const values = targets.map(targetValue);
+  if (values.includes(prev)) {
+    sel.value = prev;
+  } else {
+    // 既定は「登録済みで待機中のセッション」→ 登録済み → listen → 先頭
+    const pick = targets.find(t => t.kind === 'session' && t.registered && t.status === 'idle')
+      || targets.find(t => t.kind === 'session' && t.registered)
+      || targets.find(t => t.kind === 'listen')
+      || targets[0];
+    if (pick) sel.value = targetValue(pick);
+  }
+  const msgs = [];
+  if (data.hooksInstalled === false) {
+    msgs.push('このプロジェクトに vibeboard の hook が入っていません。node vibeboard/dist/cli.js init --root . を流すと、以後に起動したセッションが自動で登録されます。');
+  }
+  if (targets.some(t => t.kind === 'session' && !t.registered)) {
+    msgs.push('「未登録」は hook を入れる前に起動したセッションです。起動し直すか、その画面で vibeboard listen を回してください。');
+  }
+  if (data.agents && data.agents.ok === false && data.agents.error) {
+    msgs.push(`claude agents が読めません（${data.agents.error}）。hook が登録したセッションだけを出しています。`);
+  }
+  note.textContent = msgs.join(' ');
+  note.hidden = msgs.length === 0;
+  return targets;
+}
+
+const QUEUE_STATE_LABEL = { waiting: '待ち', posted: '投函済み', failed: '失敗' };
+function fmtClock(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// 投函の状態（GET /api/tasks/queue）。待ち / 投函済み / 失敗。失敗には再送、済んだものには消す
+async function renderTaskQueue(box, targetsById, onChange) {
+  let items;
+  try {
+    items = (await fetchJson('/api/tasks/queue')).items || [];
+  } catch {
+    return;
+  }
+  box.innerHTML = '';
+  if (items.length === 0) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.appendChild(mkEl('h2', null, '投函の状態'));
+  for (const it of [...items].sort((a, b) => b.at - a.at)) {
+    const row = mkEl('div', 'task-queue-item');
+    row.appendChild(mkEl('span', `task-queue-state ${it.state}`, QUEUE_STATE_LABEL[it.state] || it.state));
+    const t = targetsById.get(it.sessionId);
+    const who = t ? t.name : String(it.sessionId || '').slice(0, 8);
+    row.appendChild(mkEl('span', 'task-queue-text', `${it.kind === 'explain' ? '説明' : '実行'}: ${it.text} → ${who}`));
+    row.appendChild(mkEl('span', 'task-queue-time', fmtClock(it.updatedAt)));
+    if (it.state === 'failed') {
+      const b = mkEl('button', null, '再送');
+      b.type = 'button';
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        try {
+          await postTasks('/api/tasks/retry', { queueId: it.id });
+        } catch (err) {
+          showToast(`再送に失敗しました: ${err.message}`);
+        }
+        onChange();
+      });
+      row.appendChild(b);
+    }
+    if (it.state !== 'waiting') {
+      const b = mkEl('button', null, '消す');
+      b.type = 'button';
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        try {
+          await postTasks('/api/tasks/dismiss', { queueId: it.id });
+        } catch {
+          // 既に無ければそれでよい
+        }
+        onChange();
+      });
+      row.appendChild(b);
+    }
+    if (it.error) row.appendChild(mkEl('div', 'task-queue-err', it.error));
+    box.appendChild(row);
   }
 }
 
@@ -2449,12 +2560,7 @@ async function renderTaskView(id) {
   pageTitle.textContent = TASKS_LABEL;
   topbarSub.textContent = node.text;
 
-  const el = (tag, cls, text) => {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined) e.textContent = text;
-    return e;
-  };
+  const el = mkEl;
   const pane = el('div', 'task-pane');
   pane.appendChild(el('h1', 'task-title', node.text));
   pane.appendChild(el('div', 'task-meta', [
@@ -2465,7 +2571,7 @@ async function renderTaskView(id) {
   pane.appendChild(el('pre', 'task-subtree', renderTaskSubtree(node)));
 
   const rowWin = el('div', 'task-row');
-  const lbl = el('label', null, '送り先の画面');
+  const lbl = el('label', null, '送り先');
   lbl.htmlFor = 'task-window';
   const sel = el('select');
   sel.id = 'task-window';
@@ -2473,6 +2579,9 @@ async function renderTaskView(id) {
   refresh.type = 'button';
   rowWin.append(lbl, sel, refresh);
   pane.appendChild(rowWin);
+  const note = el('div', 'task-note task-targets-note', '');
+  note.hidden = true;
+  pane.appendChild(note);
 
   const rowBtn = el('div', 'task-row');
   const btnRun = el('button', 'primary', '実行');
@@ -2484,39 +2593,71 @@ async function renderTaskView(id) {
 
   const status = el('div', 'task-note', '');
   const hint = el('div', 'task-note',
-    '実行・説明は送り先の画面へ渡します（会話も承認もその画面で進む）。説明は変更せず内容を説明するだけ。'
-    + '削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
-    + '待ち受けは、受け取る Claude Code の画面で vibeboard listen --name <画面の名前> を回すか、その画面の Claude Code に頼んでください。');
-  pane.append(status, hint);
+    '実行・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
+    + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
+    + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
+  const queueBox = el('div', 'task-queue');
+  queueBox.hidden = true;
+  pane.append(status, hint, queueBox);
 
   contentArea.innerHTML = '';
   contentArea.appendChild(pane);
-  loadTaskWindows(sel);
+
+  let targetsById = new Map();
+  const refreshAll = async () => {
+    const targets = await loadTaskTargets(sel, note);
+    if (targets) targetsById = new Map(targets.filter(t => t.kind === 'session').map(t => [t.id, t]));
+    renderTaskQueue(queueBox, targetsById, refreshAll);
+  };
+  refreshAll();
+  // この画面を出している間だけ 5 秒おきに取り直す（別のタブへ移ったら止める）
+  const timer = setInterval(() => {
+    if (!document.body.contains(pane)) {
+      clearInterval(timer);
+      return;
+    }
+    if (document.hidden) return;
+    refreshAll();
+  }, 5000);
 
   const setBusy = on => { for (const b of [btnRun, btnExplain, btnDelete]) b.disabled = on; };
+  const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
     const verb = kind === 'explain' ? '説明を頼み' : '渡し';
+    const target = parseTargetValue(sel.value);
     setBusy(true);
     status.textContent = '送っています...';
     try {
-      const data = await postTasks('/api/tasks/run', { id, windowId: sel.value, kind });
-      if (data.routedTo) {
+      const body = { id, kind };
+      if (target && target.kind === 'listen') body.windowId = target.id;
+      else if (target && target.kind === 'session') body.sessionId = target.id;
+      const data = await postTasks('/api/tasks/run', body);
+      if (data.item) {
+        const name = nameOf(data.item.sessionId);
+        if (data.item.state === 'posted') {
+          status.textContent = `「${name}」へ${verb}ました。そのセッションの画面を見てください。`;
+        } else if (data.item.state === 'waiting') {
+          status.textContent = `「${name}」は未登録なので待ちに積みました。そのセッションを起動し直す（hook が登録する）と届きます。5 分で失敗にします。`;
+        } else {
+          status.textContent = `「${name}」への投函に失敗しました: ${data.item.error || ''}`;
+        }
+      } else if (data.routedTo) {
         status.textContent = data.connected
           ? `「${data.routedTo}」へ${verb}ました。その画面を見てください。`
           : `「${data.routedTo}」あてに送りました。今つながっていないので、その画面がつながったら届きます。`;
-      } else if (Array.isArray(data.windows) && data.windows.length > 1) {
-        status.textContent = '送り先の画面を選んでからにしてください。';
-        loadTaskWindows(sel);
+      } else if (Array.isArray(data.targets) && data.targets.length > 1) {
+        status.textContent = '送り先を選んでからにしてください。';
       } else {
-        status.textContent = '待ち受けている画面がありません。受け取る画面で待ち受けを始めてください。';
+        status.textContent = '送り先がありません。このプロジェクトで Claude Code を起動してください（hook が無ければ vibeboard init を流すか、その画面で vibeboard listen を回す）。';
       }
     } catch (err) {
       status.textContent = `受け渡しに失敗しました: ${err.message}`;
     } finally {
       setBusy(false);
+      refreshAll();
     }
   };
-  refresh.addEventListener('click', () => loadTaskWindows(sel));
+  refresh.addEventListener('click', refreshAll);
   btnRun.addEventListener('click', () => send('run'));
   btnExplain.addEventListener('click', () => send('explain'));
   btnDelete.addEventListener('click', async () => {
