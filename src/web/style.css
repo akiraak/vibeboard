@@ -1159,3 +1159,300 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   line-height: 1;
   pointer-events: none;
 }
+
+/* TODO ツリー（Root タブの「ツリー」サブタブ） */
+.todo-tree {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 20px 20px;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.todo-tree-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-mute);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.todo-tree-summary button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+
+.todo-tree-summary button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.todo-tree-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  background: #dbeefb;
+  padding: 5px 12px;
+  border-radius: 4px;
+  margin: 14px 0 6px;
+}
+
+.todo-tree-heading:first-child { margin-top: 0; }
+
+.todo-tree-heading.level-3 {
+  background: #eef4fb;
+  font-size: 13px;
+}
+
+.todo-tree-count {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+.todo-node-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 6px 3px 2px;
+  border-radius: 4px;
+}
+
+.todo-node-row:hover { background: var(--hover); }
+
+.todo-node.flash > .todo-node-row {
+  animation: todo-flash 1.4s ease-out;
+}
+
+@keyframes todo-flash {
+  0% { background: #fff3bf; box-shadow: 0 0 0 2px #f5c518; }
+  100% { background: transparent; box-shadow: none; }
+}
+
+.todo-toggle {
+  flex: none;
+  width: 18px;
+  height: 22px;
+  background: none;
+  border: none;
+  color: var(--text-sub);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 22px;
+  padding: 0;
+}
+
+.todo-toggle:hover { color: var(--text); }
+
+.todo-toggle.leaf { visibility: hidden; }
+
+.todo-toggle::before { content: '▼'; }
+
+.todo-node.collapsed > .todo-node-row .todo-toggle::before { content: '▶'; }
+
+.todo-mark {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 4px;
+  border: 1.5px solid var(--text-sub);
+  border-radius: 3px;
+  position: relative;
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+  color: var(--text-mute);
+}
+
+.todo-mark.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.todo-mark.done::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.todo-mark.active {
+  border-color: #d97706;
+  background: linear-gradient(90deg, #f59e0b 50%, transparent 50%);
+}
+
+.todo-mark.cancelled {
+  border-style: dashed;
+}
+
+.todo-mark.cancelled::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  border-top: 1.5px solid var(--text-sub);
+}
+
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.todo-node.done > .todo-node-row .todo-text,
+.todo-node.cancelled > .todo-node-row .todo-text {
+  color: var(--text-mute);
+  text-decoration: line-through;
+}
+
+.todo-text a { color: var(--accent); }
+.todo-text a:hover { text-decoration: underline; }
+.todo-text code {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.todo-progress {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 11px;
+  color: var(--text-sub);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.todo-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.todo-chip {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--side-bg);
+  color: var(--text-mute);
+  cursor: pointer;
+  text-decoration: none !important;
+  vertical-align: middle;
+}
+
+.todo-chip:hover { filter: brightness(0.95); }
+
+.todo-chip-doc {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: #b6d4f5;
+}
+
+.todo-chip-depends {
+  color: #b42318;
+  background: #fff1f0;
+  border-color: #f0c2bd;
+}
+
+.todo-chip-derived {
+  color: #6f42c1;
+  background: #f3eefc;
+  border-color: #d8c8f5;
+}
+
+.todo-chip-related {
+  color: #1a7f37;
+  background: #ecfdf3;
+  border-color: #b7e2c4;
+}
+
+/* 逆方向（相手側に書かれている関係）は点線で見分ける */
+.todo-chip-in { border-style: dashed; background: var(--panel); }
+
+.todo-chip.unresolved,
+.todo-chip.missing {
+  cursor: default;
+  opacity: 0.65;
+  text-decoration: line-through !important;
+}
+
+.todo-node-notes {
+  margin: 0 0 4px 41px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+.todo-node-notes > summary {
+  cursor: pointer;
+  color: var(--text-sub);
+  font-size: 11px;
+  user-select: none;
+  list-style: none;
+}
+
+.todo-node-notes > summary::-webkit-details-marker { display: none; }
+.todo-node-notes > summary::before { content: '＋ '; }
+.todo-node-notes[open] > summary::before { content: '－ '; }
+.todo-node-notes > summary:hover { color: var(--text); }
+
+.todo-note {
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  margin: 2px 0;
+  word-break: break-word;
+}
+
+.todo-note a { color: var(--accent); }
+.todo-note code {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 0.9em;
+  background: var(--code-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.todo-node-children {
+  margin-left: 20px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+.todo-node.collapsed > .todo-node-children,
+.todo-node.collapsed > .todo-node-notes {
+  display: none;
+}
+
+.todo-tree-empty {
+  color: var(--text-mute);
+  padding: 8px 0;
+}

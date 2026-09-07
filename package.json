@@ -29,7 +29,8 @@
     "sample:dev": "ts-node src/cli.ts --root sample",
     "prepare": "npm run build",
     "postinstall": "node scripts/install-launcher.mjs",
-    "install-launcher": "node scripts/install-launcher.mjs --force"
+    "install-launcher": "node scripts/install-launcher.mjs --force",
+    "test": "npm run build && node --test test/*.test.js"
   },
   "dependencies": {
     "express": "^4.21.2",

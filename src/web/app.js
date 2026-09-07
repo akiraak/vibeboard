@@ -35,6 +35,8 @@ const STORAGE_CATEGORY = 'vibeboard.activeCategory';
 const STORAGE_EXPANDED = 'vibeboard.expanded';
 const STORAGE_SIDEBAR_COLLAPSED = 'vibeboard.sidebarCollapsed';
 const STORAGE_SORT = 'vibeboard.sort';
+// タスクを含む Markdown を開いたとき、ツリーとプレビューのどちらを出すか（前回の選択）
+const STORAGE_TODO_MODE = 'vibeboard.todoMode';
 
 // ソート状態: { key: 'mtime'|'name', mtimeDir: 'asc'|'desc', nameDir: 'asc'|'desc' }
 // 各キーの方向は独立に記憶する（キー切替時に直前の向きを復元）
@@ -135,13 +137,24 @@ function categoryBasePath(name) {
 }
 
 // root 相対パスをどのタブで開くか決める。
-// 元のタブに収まるならそのまま、収まらなければ Files タブへ落とす
-// （カテゴリのツリーは .md / .html しか並べないので、他の場所・拡張子は映らない）。
+// preferTab に収まるならそのまま。そうでなければ他のカテゴリ → Root タブの名前付きファイル →
+// Files タブ の順で探す（カテゴリのツリーは .md / .html しか並べないので、他の拡張子は Files へ）。
 function docHashForPath(path, preferTab) {
-  const base = preferTab ? categoryBasePath(preferTab) : null;
-  if (base && path.startsWith(`${base}/`)) {
-    const key = path.slice(base.length + 1);
-    if (/\.(md|html)$/i.test(key)) return `${preferTab}/${encodePath(key)}`;
+  const names = [
+    ...(preferTab && CATEGORY_BY_NAME.has(preferTab) ? [preferTab] : []),
+    ...CATEGORY_DEFS.map(c => c.name).filter(n => n !== preferTab),
+  ];
+  if (/\.(md|html)$/i.test(path)) {
+    for (const name of names) {
+      const base = categoryBasePath(name);
+      if (base && path.startsWith(`${base}/`)) {
+        return `${name}/${encodePath(path.slice(base.length + 1))}`;
+      }
+    }
+  }
+  for (const f of EDITABLE_FILES) {
+    const fp = typeof f.path === 'string' && f.path ? f.path : f.name;
+    if (fp === path) return `${EDITABLE_TAB}/${encodeURIComponent(f.name)}`;
   }
   return `${FILES_TAB}/${encodePath(path)}`;
 }
@@ -152,6 +165,38 @@ function sourceUrl(path) {
 
 function renderUrl(path) {
   return `/api/render/${encodePath(path)}`;
+}
+
+function todoUrl(path) {
+  return `/api/todo/${encodePath(path)}`;
+}
+
+// `- [ ]` の行が 1 つでもあれば「ツリー」サブタブを出す（判定はサーバの todo.ts と同じ）
+function hasTaskLines(content) {
+  return typeof content === 'string' && /^\s*(?:[-*+]|\d+[.)])\s+\[.\]/m.test(content);
+}
+
+function loadTodoModePref() {
+  try {
+    return localStorage.getItem(STORAGE_TODO_MODE) === 'preview' ? 'preview' : 'tree';
+  } catch (e) {
+    return 'tree';
+  }
+}
+
+function saveTodoModePref(mode) {
+  try {
+    localStorage.setItem(STORAGE_TODO_MODE, mode);
+  } catch (e) {}
+}
+
+// 開くファイルに合わせて表示モードを決める。
+// タスクを含む Markdown は「ツリー」を出せる。前回ツリーとプレビューのどちらを選んだかを覚えていて、
+// 編集中でなければそれに合わせる。タスクの無いファイルではツリーは出せないのでプレビューへ落とす
+function resolveDocMode(mode, hasTasks) {
+  if (mode === 'edit') return 'edit';
+  if (!hasTasks) return 'preview';
+  return loadTodoModePref();
 }
 
 // 拡張子が .md のときだけプレビューを出せる
@@ -245,11 +290,13 @@ function decodePath(p) {
   return p.split('/').map(decodeURIComponent).join('/');
 }
 
-// 本文 (.md-content) 内の相対 .md / .html リンクのクリックを SPA の hash 遷移へ変換する。
+// 本文 (.md-content / TODO ツリー) 内の相対リンクのクリックを SPA の hash 遷移へ変換する。
 // 元の Markdown は無編集のまま（GitHub / VSCode プレビューの相対リンクを壊さない）。
-// 画像・音声等のメディアはサーバ側で /files に書き換え済みなのでここでは扱わない。
-// カテゴリのルートは docs/<category> を前提（vibeboard 既定構成）。クロスカテゴリの
-// 相対リンク（例 plans → ../../specs/...）も docs ルートからの正規化で解決する。
+// 画像・音声等のメディアはサーバ側で /files に書き換え済み（先頭 /）なのでここでは扱わない。
+// **今開いているファイルの場所からの相対**で解決する（Root タブの TODO.md なら root から。
+// 以前は docs/<category>/ の中でしか解決せず、TODO.md の `[plan](docs/plans/x.md)` は
+// ブラウザがそのまま開こうとして 404 になっていた）。
+// 開く先のタブは docHashForPath が決める（カテゴリ → Root → Files）。
 // .md#section の section アンカーは SPA 未対応のため落として doc 先頭へ遷移する。
 function resolveDocLinkHash(href) {
   if (!href) return null;
@@ -263,26 +310,26 @@ function resolveDocLinkHash(href) {
   if (hashIdx !== -1) cut = hashIdx;
   if (qIdx !== -1 && (cut === -1 || qIdx < cut)) cut = qIdx;
   if (cut !== -1) pathPart = href.slice(0, cut);
-  if (!pathPart || !/\.(md|html)$/i.test(pathPart)) return null;
+  if (!pathPart || !docState.path) return null;
+  try { pathPart = decodeURIComponent(pathPart); } catch (e) {}
+  const resolved = resolveRelativeToDoc(pathPart);
+  if (!resolved) return null;
+  return `#${docHashForPath(resolved, docState.tab)}`;
+}
 
-  const cur = parseHash();
-  if (!cur || cur.category === EDITABLE_TAB) return null;
-
-  // 現在ドキュメントの docs ルート相対パスから dirname を取り、相対解決する
-  const curFull = `docs/${cur.category}/${cur.filePath}`;
-  const segs = curFull.split('/').slice(0, -1); // dirname
-  for (const part of pathPart.split('/')) {
+// 今開いているファイルのディレクトリからの相対パスを root 相対にする。root の外なら null。
+function resolveRelativeToDoc(rel) {
+  const segs = docState.path.split('/').slice(0, -1);
+  for (const part of rel.split('/')) {
     if (part === '' || part === '.') continue;
-    if (part === '..') { if (segs.length) segs.pop(); continue; }
+    if (part === '..') {
+      if (segs.length === 0) return null;
+      segs.pop();
+      continue;
+    }
     segs.push(part);
   }
-  const resolved = segs.join('/');
-  const m = resolved.match(/^docs\/([^/]+)\/(.+)$/);
-  if (!m) return null;
-  const newCat = m[1];
-  const newPath = m[2];
-  if (!CATEGORIES.includes(newCat) || newCat === EDITABLE_TAB) return null;
-  return `#${newCat}/${encodePath(newPath)}`;
+  return segs.length > 0 ? segs.join('/') : null;
 }
 
 // contentArea（安定コンテナ。子は描画ごとに差し替え）に委譲クリックを 1 度だけ張る。
@@ -914,15 +961,19 @@ async function openDoc(tab, key) {
     docState.conflict = null;
     // プレビューできないものは編集モード固定（読み取り専用の理由をそこに出す）
     if (!isMarkdownPath(path)) docState.mode = 'edit';
-    else if (docState.mode !== 'preview' && docState.mode !== 'edit') docState.mode = 'preview';
+    else docState.mode = resolveDocMode(docState.mode, hasTaskLines(docState.content));
+    // 畳んだ状態は同じファイルの描き直しでは保ち、別のファイルを開いたら捨てる
+    if (todoTreeState.path !== path) {
+      todoTreeState.path = path;
+      todoTreeState.collapsed = new Set();
+    }
 
     pageTitle.textContent = tab === EDITABLE_TAB ? key.replace(/\.md$/, '') : key.split('/').pop();
     topbarSub.textContent = path;
     contentArea.innerHTML = '';
     contentArea.appendChild(buildDocLayout());
 
-    if (docState.mode === 'preview') await renderDocPreviewBody();
-    else renderDocEditBody();
+    await renderDocBody();
     updateConflictIndicators();
   } catch (err) {
     showError(err.message);
@@ -941,14 +992,16 @@ function buildDocLayout() {
     const subtabs = document.createElement('div');
     subtabs.className = 'todo-subtabs';
     subtabs.setAttribute('role', 'tablist');
-    for (const m of ['preview', 'edit']) {
+    // タスク（- [ ]）を含むファイルだけ「ツリー」を出す
+    const modes = hasTaskLines(docState.content) ? ['tree', 'preview', 'edit'] : ['preview', 'edit'];
+    for (const m of modes) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'todo-subtab' + (docState.mode === m ? ' active' : '');
       btn.dataset.mode = m;
       btn.setAttribute('role', 'tab');
       btn.setAttribute('aria-selected', docState.mode === m ? 'true' : 'false');
-      btn.textContent = m === 'preview' ? 'プレビュー' : '編集';
+      btn.textContent = DOC_MODE_LABELS[m];
       btn.addEventListener('click', () => switchDocMode(m));
       subtabs.appendChild(btn);
     }
@@ -1035,12 +1088,22 @@ async function switchDocMode(mode) {
     docState.conflict = null;
   }
   docState.mode = mode;
+  // ツリー / プレビューの選択は次にタスクを含むファイルを開いたときにも効かせる
+  if (mode !== 'edit' && hasTaskLines(docState.content)) saveTodoModePref(mode);
   clearTocObserver();
   contentArea.innerHTML = '';
   contentArea.appendChild(buildDocLayout());
-  if (mode === 'preview') await renderDocPreviewBody();
-  else renderDocEditBody();
+  await renderDocBody();
   updateConflictIndicators();
+}
+
+const DOC_MODE_LABELS = { tree: 'ツリー', preview: 'プレビュー', edit: '編集' };
+
+// 現在のモードに合わせて本文を描く
+async function renderDocBody() {
+  if (docState.mode === 'tree') await renderDocTreeBody();
+  else if (docState.mode === 'preview') await renderDocPreviewBody();
+  else renderDocEditBody();
 }
 
 // プレビュー本文を描く。カテゴリでは従来どおり目次ペインを併せて出す。
@@ -1082,6 +1145,276 @@ async function renderDocPreviewBody() {
     div.textContent = err.message;
     body.appendChild(div);
   }
+}
+
+
+// === TODO ツリー ===
+//
+// GET /api/todo/<path> が返す木（字下げの親子・状態・メモ・関係）を描く。
+// 解釈はすべてサーバ（todo.ts）で済んでいて、ここは DOM を組むだけ。
+
+// 畳んだノードの id。同じファイルを描き直しても保ち、別のファイルを開いたら捨てる（openDoc）
+const todoTreeState = { path: null, collapsed: new Set() };
+
+const RELATION_LABELS = {
+  depends: { out: '依存', in: '被依存' },
+  derived: { out: '派生元', in: '派生先' },
+  related: { out: '関連', in: '関連' },
+};
+
+const TODO_STATE_LABELS = { open: '未着手', done: '完了', active: '進行中', cancelled: '中止' };
+
+// チップに載せる短い文面（リンクは文字列に、コードの記号は落とす）
+function shortText(text, max = 28) {
+  const t = String(text)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+async function renderDocTreeBody() {
+  const body = document.getElementById('todo-body');
+  if (!body) return;
+  body.innerHTML = '<div class="loading-text">読み込み中...</div>';
+  try {
+    const data = await fetchJson(todoUrl(docState.path));
+    if (typeof data.mtime === 'number') docState.mtime = data.mtime;
+    body.innerHTML = '';
+    body.appendChild(buildTodoTree(data));
+  } catch (err) {
+    body.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'error-text';
+    div.textContent = err.message;
+    body.appendChild(div);
+  }
+}
+
+function buildTodoTree(data) {
+  const byId = new Map();
+  const index = (nodes) => {
+    for (const n of nodes) {
+      byId.set(n.id, n);
+      index(n.children);
+    }
+  };
+  for (const sec of data.sections) index(sec.tasks);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'todo-tree';
+
+  const summary = document.createElement('div');
+  summary.className = 'todo-tree-summary';
+  const states = data.states || {};
+  const counts = [`タスク ${data.count}`];
+  if (states.done) counts.push(`完了 ${states.done}`);
+  if (states.active) counts.push(`進行中 ${states.active}`);
+  if (states.cancelled) counts.push(`中止 ${states.cancelled}`);
+  const countEl = document.createElement('span');
+  countEl.textContent = counts.join(' / ');
+  summary.appendChild(countEl);
+
+  const expandAll = document.createElement('button');
+  expandAll.type = 'button';
+  expandAll.textContent = 'すべて開く';
+  expandAll.addEventListener('click', () => {
+    todoTreeState.collapsed.clear();
+    wrap.querySelectorAll('.todo-node.collapsed').forEach(el => el.classList.remove('collapsed'));
+  });
+  summary.appendChild(expandAll);
+
+  const collapseAll = document.createElement('button');
+  collapseAll.type = 'button';
+  collapseAll.textContent = 'すべて閉じる';
+  collapseAll.addEventListener('click', () => {
+    wrap.querySelectorAll('.todo-node[data-has-children="1"]').forEach(el => {
+      el.classList.add('collapsed');
+      todoTreeState.collapsed.add(el.dataset.taskId);
+    });
+  });
+  summary.appendChild(collapseAll);
+  wrap.appendChild(summary);
+
+  if (!data.count) {
+    const empty = document.createElement('div');
+    empty.className = 'todo-tree-empty';
+    empty.textContent = 'タスク（- [ ] の行）がありません';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  for (const sec of data.sections) {
+    if (sec.heading) {
+      const h = document.createElement('div');
+      h.className = `todo-tree-heading level-${Math.min(sec.level || 2, 3)}`;
+      const title = document.createElement('span');
+      title.textContent = sec.heading;
+      h.appendChild(title);
+      let total = 0;
+      let done = 0;
+      for (const t of sec.tasks) {
+        total += 1 + t.total;
+        done += (t.state === 'done' ? 1 : 0) + t.done;
+      }
+      const c = document.createElement('span');
+      c.className = 'todo-tree-count';
+      c.textContent = `${done} / ${total}`;
+      c.title = '完了 / 全体';
+      h.appendChild(c);
+      wrap.appendChild(h);
+    }
+    for (const t of sec.tasks) wrap.appendChild(buildTodoNode(t, byId));
+  }
+  return wrap;
+}
+
+function buildTodoNode(node, byId) {
+  const el = document.createElement('div');
+  el.className = `todo-node ${node.state}`;
+  el.dataset.taskId = node.id;
+  el.dataset.hasChildren = node.children.length > 0 ? '1' : '0';
+  if (node.children.length > 0 && todoTreeState.collapsed.has(node.id)) el.classList.add('collapsed');
+
+  const row = document.createElement('div');
+  row.className = 'todo-node-row';
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'todo-toggle' + (node.children.length > 0 ? '' : ' leaf');
+  toggle.title = '子を畳む / 開く';
+  toggle.setAttribute('aria-label', '子を畳む / 開く');
+  toggle.addEventListener('click', () => {
+    const collapsed = el.classList.toggle('collapsed');
+    if (collapsed) todoTreeState.collapsed.add(node.id);
+    else todoTreeState.collapsed.delete(node.id);
+  });
+  row.appendChild(toggle);
+
+  const mark = document.createElement('span');
+  mark.className = `todo-mark ${node.state}`;
+  mark.title = TODO_STATE_LABELS[node.state] || node.state;
+  // 知らない記号（`[?]` など）は未着手扱いだが、記号は見せる
+  if (node.state === 'open' && node.mark !== ' ') mark.textContent = node.mark;
+  row.appendChild(mark);
+
+  const text = document.createElement('div');
+  text.className = 'todo-text';
+  const html = document.createElement('span');
+  html.innerHTML = node.html;
+  text.appendChild(html);
+  if (node.children.length > 0) {
+    const progress = document.createElement('span');
+    progress.className = 'todo-progress';
+    progress.textContent = `${node.done}/${node.total}`;
+    progress.title = '子孫の 完了 / 全体';
+    text.appendChild(progress);
+  }
+  const chips = buildTodoChips(node, byId);
+  if (chips) text.appendChild(chips);
+  row.appendChild(text);
+  el.appendChild(row);
+
+  if (node.notes.length > 0) {
+    const details = document.createElement('details');
+    details.className = 'todo-node-notes';
+    const sum = document.createElement('summary');
+    sum.textContent = `メモ ${node.notes.length} 件`;
+    details.appendChild(sum);
+    node.notesHtml.forEach((h) => {
+      const line = document.createElement('div');
+      line.className = 'todo-note';
+      line.innerHTML = h;
+      details.appendChild(line);
+    });
+    el.appendChild(details);
+  }
+
+  if (node.children.length > 0) {
+    const kids = document.createElement('div');
+    kids.className = 'todo-node-children';
+    for (const c of node.children) kids.appendChild(buildTodoNode(c, byId));
+    el.appendChild(kids);
+  }
+  return el;
+}
+
+// タスクの右に出す関係のチップ。
+//   - 関係行（依存: / 派生元: / 関連:）に書かれた相手のタスク → クリックでそこへ
+//   - 相手側に書かれている関係（逆方向）→ 点線のチップ
+//   - 関係行やメモに書かれたドキュメント → そのドキュメントのタブへ
+// タスクの行そのものにあるリンク（`[plan](…)`）は本文の中でリンクのまま出るので、二重には出さない
+function buildTodoChips(node, byId) {
+  const chips = document.createElement('span');
+  chips.className = 'todo-chips';
+
+  for (const ref of node.refs) {
+    const label = RELATION_LABELS[ref.kind] ? RELATION_LABELS[ref.kind].out : ref.kind;
+    const target = ref.taskId ? byId.get(ref.taskId) : null;
+    chips.appendChild(taskChip(`${label}: ${shortText(target ? target.text : ref.text)}`, ref.kind, false, target, ref));
+  }
+  for (const inb of node.inbound) {
+    const source = byId.get(inb.taskId);
+    if (!source) continue;
+    const label = RELATION_LABELS[inb.kind] ? RELATION_LABELS[inb.kind].in : inb.kind;
+    chips.appendChild(taskChip(`${label}: ${shortText(source.text)}`, inb.kind, true, source, null));
+  }
+  for (const doc of node.docs) {
+    if (doc.source === 'text') continue;
+    const kindLabel = doc.kind && RELATION_LABELS[doc.kind] ? `${RELATION_LABELS[doc.kind].out}: ` : '';
+    const chip = document.createElement('a');
+    chip.className = 'todo-chip todo-chip-doc';
+    chip.textContent = `${kindLabel}${doc.label}`;
+    if (doc.path && doc.exists) {
+      chip.href = `#${docHashForPath(doc.path, docState.tab)}`;
+      chip.title = doc.path;
+    } else {
+      chip.classList.add('missing');
+      chip.title = doc.path ? `見つかりません: ${doc.path}` : `root の外を指しています: ${doc.href}`;
+    }
+    chips.appendChild(chip);
+  }
+  return chips.childNodes.length > 0 ? chips : null;
+}
+
+function taskChip(text, kind, inbound, target, ref) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = `todo-chip todo-chip-${kind}` + (inbound ? ' todo-chip-in' : '');
+  chip.textContent = text;
+  if (target) {
+    chip.title = target.text;
+    chip.addEventListener('click', () => focusTodoTask(target.id));
+  } else {
+    chip.classList.add('unresolved');
+    chip.setAttribute('aria-disabled', 'true');
+    chip.title = ref && ref.ambiguous
+      ? `候補が複数あって決められません: ${ref.text}`
+      : `このファイルの中に見つかりません: ${ref ? ref.text : ''}`;
+  }
+  return chip;
+}
+
+// 相手のタスクへスクロールして光らせる。畳まれた親は開く
+function focusTodoTask(id) {
+  const el = document.querySelector(`.todo-node[data-task-id="${CSS.escape(id)}"]`);
+  if (!el) return;
+  let p = el.parentElement;
+  while (p) {
+    if (p.classList && p.classList.contains('todo-node') && p.classList.contains('collapsed')) {
+      p.classList.remove('collapsed');
+      todoTreeState.collapsed.delete(p.dataset.taskId);
+    }
+    p = p.parentElement;
+  }
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // 続けて同じ相手を押しても光るよう、一度外してから付け直す
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+  clearTimeout(el._flashTimer);
+  el._flashTimer = setTimeout(() => el.classList.remove('flash'), 1500);
 }
 
 const READ_ONLY_REASONS = {
@@ -1152,8 +1485,7 @@ async function refetchDoc() {
     docState.eol = data.eol || 'lf';
     docState.readOnly = !!data.readOnly;
     docState.readOnlyReason = data.readOnlyReason || null;
-    if (docState.mode === 'preview') await renderDocPreviewBody();
-    else renderDocEditBody();
+    await renderDocBody();
     docState.conflict = null;
     updateConflictIndicators();
     showToast('最新を読み込みました', 1500);
@@ -1759,8 +2091,11 @@ async function handleExternalChange(path, mtime) {
   // 同じ競合 mtime を再通知された場合は UI 再構築を避ける
   if (docState.conflict && docState.conflict.mtime === mtime) return;
 
-  if (docState.mode === 'preview') {
-    await refetchPreviewForExternalChange();
+  if (docState.mode === 'preview' || docState.mode === 'tree') {
+    // 描き直すだけでなく生も取り直す。描き直しだけだと mtime だけ新しくなり、
+    // 編集へ切り替えたとき古い本文に新しい mtime が付いて外部の変更を黙って上書きしてしまう
+    await reloadEditFromExternal({ notify: false });
+    flashExternalUpdateBadge();
     return;
   }
 
@@ -1775,15 +2110,6 @@ async function handleExternalChange(path, mtime) {
   updateConflictIndicators();
 }
 
-async function refetchPreviewForExternalChange() {
-  try {
-    await renderDocPreviewBody();
-    flashExternalUpdateBadge();
-  } catch {
-    // ignore
-  }
-}
-
 async function reloadEditFromExternal({ notify }) {
   try {
     const data = await fetchJson(sourceUrl(docState.path));
@@ -1794,8 +2120,10 @@ async function reloadEditFromExternal({ notify }) {
     docState.readOnly = !!data.readOnly;
     docState.readOnlyReason = data.readOnlyReason || null;
     docState.conflict = null;
-    if (docState.mode === 'edit') renderDocEditBody();
-    else await renderDocPreviewBody();
+    // 外部の変更でタスクの有無が変わることもあるので、サブタブごと組み直す
+    contentArea.innerHTML = '';
+    contentArea.appendChild(buildDocLayout());
+    await renderDocBody();
     updateConflictIndicators();
     if (notify) showCleanUpdateInfoBar();
   } catch {

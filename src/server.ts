@@ -5,6 +5,7 @@ import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import { startSidecars, stopSidecars } from './sidecar';
+import { parseTodo } from './todo';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
@@ -788,6 +789,34 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     const md = raw.replace(/^---[\s\S]*?---\n*/, '');
     const html = rewriteRelativeAssetUrls(marked(md) as string, resolved.absPath, config.root);
     res.json({ success: true, data: { title, html, mtime }, error: null });
+  });
+
+  // TODO.md を「タスクの木」にして返す（root 相対パス）。境界は /api/render/* と同じ。
+  // 字下げを親子にし、`依存:` / `派生元:` / `関連:` の行と Markdown リンクを関係として取り出す。
+  // リンク先の実在はここで確かめる（root の外は todo.ts 側で null になるので触らない）。
+  app.get('/api/todo/*', (req: Request, res: Response) => {
+    const relPath = (req.params[0] as string) || '';
+    const resolved = resolveSource(config.root, relPath, config.files.exclude);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ success: false, data: null, error: resolved.error });
+      return;
+    }
+    if (!relPath.toLowerCase().endsWith('.md')) {
+      res.status(400).json({ success: false, data: null, error: 'Markdown ではありません' });
+      return;
+    }
+    if (!fs.existsSync(resolved.absPath) || !fs.statSync(resolved.absPath).isFile()) {
+      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
+      return;
+    }
+    const raw = fs.readFileSync(resolved.absPath, 'utf-8');
+    const mtime = fs.statSync(resolved.absPath).mtimeMs;
+    const tree = parseTodo(raw, {
+      mdPath: resolved.relPath,
+      exists: (p) => fs.existsSync(path.join(config.root, p)),
+      inline: (s) => marked.parseInline(s) as string,
+    });
+    res.json({ success: true, data: { ...tree, mtime }, error: null });
   });
 
   // index.html はテンプレ置換しつつ返す（タイトル / クライアント設定の inject）
