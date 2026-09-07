@@ -1893,7 +1893,7 @@ function handleRoute() {
     // Tasks: filePath はタスク id。空なら一覧だけ描き、先頭のタスクへ自動遷移する
     setWatchTarget(TASKS_TODO_PATH);
     if (!filePath) {
-      renderTasksSidebar();
+      renderSidebar();
       showEmpty();
       return;
     }
