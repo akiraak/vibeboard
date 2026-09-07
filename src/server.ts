@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
-import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
+import type { CategoryConfig, CustomTabConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import { startSidecars, stopSidecars } from './sidecar';
 import { buildExplainPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
@@ -262,10 +262,6 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   const categoryByName = new Map<string, CategoryConfig>(
     config.categories.map(c => [c.name, c])
   );
-  const editableByName = new Map<string, EditableFileConfig>(
-    config.editable.files.map(f => [f.name, f])
-  );
-
   // ドキュメント一覧（ツリー構造）
   app.get('/api/docs', (_req: Request, res: Response) => {
     const data: Record<string, Tree> = {};
@@ -405,7 +401,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   });
 
   // SSE: **クライアントが今開いている 1 ファイル**の外部変更を通知する。
-  // 注: `/api/files/:name` より先にマウントすること（:name にマッチしてしまうため）
+  // （以前はこの下に Root タブ用の /api/files/:name があった。Root 廃止で無くなった）
   //
   // 以前は editable の 4 件を固定で監視していたが、クライアントは開いていない
   // ファイルの通知を捨てていたので実質は無駄だった。対象がプロジェクト全体に
@@ -474,82 +470,6 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       }
     };
     req.on('close', cleanup);
-  });
-
-  // 編集可能ファイル: 生 Markdown + mtime
-  app.get('/api/files/:name', (req: Request, res: Response) => {
-    const ec = editableByName.get(req.params.name as string);
-    if (!ec) {
-      res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
-      return;
-    }
-    if (!fs.existsSync(ec.path)) {
-      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
-      return;
-    }
-    const content = fs.readFileSync(ec.path, 'utf-8');
-    const mtime = fs.statSync(ec.path).mtimeMs;
-    res.json({ success: true, data: { content, mtime }, error: null });
-  });
-
-  // 編集可能ファイル: marked で HTML 化
-  app.get('/api/files/:name/render', (req: Request, res: Response) => {
-    const name = req.params.name as string;
-    const ec = editableByName.get(name);
-    if (!ec) {
-      res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
-      return;
-    }
-    if (!fs.existsSync(ec.path)) {
-      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
-      return;
-    }
-    const raw = fs.readFileSync(ec.path, 'utf-8');
-    const mtime = fs.statSync(ec.path).mtimeMs;
-    const title = extractMdTitle(raw, name.replace(/\.md$/, ''));
-    const md = raw.replace(/^---[\s\S]*?---\n*/, '');
-    const html = rewriteRelativeAssetUrls(marked(md) as string, ec.path, config.root);
-    res.json({ success: true, data: { title, html, mtime }, error: null });
-  });
-
-  // 編集可能ファイル: 保存（mtime 楽観ロック + tmp → rename のアトミック書き込み）
-  app.put('/api/files/:name', (req: Request, res: Response) => {
-    const ec = editableByName.get(req.params.name as string);
-    if (!ec) {
-      res.status(400).json({ success: false, data: null, error: '編集対象外のファイルです' });
-      return;
-    }
-    const body = req.body as { content?: unknown; baseMtime?: unknown } | undefined;
-    if (!body || typeof body.content !== 'string' || typeof body.baseMtime !== 'number') {
-      res.status(400).json({ success: false, data: null, error: 'content / baseMtime が不正です' });
-      return;
-    }
-    if (!fs.existsSync(ec.path)) {
-      res.status(404).json({ success: false, data: null, error: 'ファイルが見つかりません' });
-      return;
-    }
-    const currentMtime = fs.statSync(ec.path).mtimeMs;
-    if (currentMtime !== body.baseMtime) {
-      res.status(409).json({
-        success: false,
-        data: { currentMtime },
-        error: '外部で更新されています',
-      });
-      return;
-    }
-    const tmp = `${ec.path}.tmp.${process.pid}.${Date.now()}`;
-    try {
-      fs.writeFileSync(tmp, body.content, 'utf-8');
-      fs.renameSync(tmp, ec.path);
-    } catch (e) {
-      if (fs.existsSync(tmp)) {
-        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-      }
-      res.status(500).json({ success: false, data: null, error: '書き込みに失敗しました' });
-      return;
-    }
-    const newMtime = fs.statSync(ec.path).mtimeMs;
-    res.json({ success: true, data: { mtime: newMtime }, error: null });
   });
 
   // === プロジェクト内の任意ファイル（root 相対パス 1 本で指す） ===
@@ -977,14 +897,6 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     path: toRootRel(c.path, config.root),
   }));
   const clientFiles = { label: config.files.label };
-  const clientEditable = {
-    label: config.editable.label,
-    files: config.editable.files.map(f => ({
-      name: f.name,
-      label: f.label,
-      path: toRootRel(f.path, config.root),
-    })),
-  };
   // customTabs は baseUrl ごとクライアントへ流す（クライアントが直接 fetch するため）。
   // baseUrl はループバック前提なので秘匿対象ではない。
   // **command は渡さない**（起動はサーバ側の話で、ブラウザに配る理由が無い）。
@@ -998,7 +910,6 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     const clientConfig = JSON.stringify({
       title: config.title,
       categories: clientCategories,
-      editable: clientEditable,
       files: clientFiles,
       customTabs: clientCustomTabs,
     });
@@ -1062,7 +973,6 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   console.log(`[vibeboard] root: ${config.root}`);
   console.log(`[vibeboard] title: ${config.title}`);
   console.log(`[vibeboard] categories: ${config.categories.map(c => c.name).join(', ')}`);
-  console.log(`[vibeboard] editable: ${config.editable.files.map(f => f.name).join(', ')}`);
   console.log(`[vibeboard] files: 除外 ${config.files.exclude.join(', ')}`);
   if (config.customTabs.length > 0) {
     const cts = config.customTabs.map(t => `${t.name}→${t.baseUrl}`).join(', ');

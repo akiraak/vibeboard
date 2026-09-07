@@ -1,14 +1,14 @@
 'use strict';
 
-// 編集対象タブ（TODO 系）の URL スラッグ。表示ラベルは設定可能だがスラッグは固定。
-const EDITABLE_TAB = 'todo';
+// 旧 Root タブ（スラッグ 'todo'）は廃止した。#todo/<name> は #files/<name> へ読み替える（handleRoute）。
+const LEGACY_ROOT_TAB = 'todo';
 // プロジェクト内の全ファイルを開くタブ。こちらもスラッグは固定。
 const FILES_TAB = 'files';
 // TODO.md のタスクを、待ち受けている Claude Code へ渡すタブ。スラッグは固定。
 const TASKS_TAB = 'tasks';
 const TASKS_LABEL = 'Tasks';
 
-// サーバから注入された設定。`__VIBEBOARD__` には categories / editable も含まれる。
+// サーバから注入された設定。`__VIBEBOARD__` には categories / files / customTabs も含まれる。
 const VB_CONFIG = (typeof window !== 'undefined' && window.__VIBEBOARD__) || {};
 const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categories.length > 0
   ? VB_CONFIG.categories
@@ -17,18 +17,11 @@ const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categorie
       { name: 'specs', label: 'Specs', archive: false },
     ];
 const CATEGORY_BY_NAME = new Map(CATEGORY_DEFS.map(c => [c.name, c]));
-const EDITABLE_LABEL = (VB_CONFIG.editable && VB_CONFIG.editable.label) || 'Root';
-const EDITABLE_FILES = (VB_CONFIG.editable && Array.isArray(VB_CONFIG.editable.files) && VB_CONFIG.editable.files.length > 0)
-  ? VB_CONFIG.editable.files
-  : [{ name: 'TODO.md', label: 'TODO' }, { name: 'DONE.md', label: 'DONE' }, { name: 'CLAUDE.md', label: 'CLAUDE' }, { name: 'README.md', label: 'README' }];
-const EDITABLE_NAMES = EDITABLE_FILES.map(f => f.name);
-const EDITABLE_BY_NAME = new Map(EDITABLE_FILES.map(f => [f.name, f]));
 // customTabs はサーバ側で正規化済み（name/label/baseUrl）。未指定なら空配列。
 const CUSTOM_TABS = Array.isArray(VB_CONFIG.customTabs) ? VB_CONFIG.customTabs : [];
 const CUSTOM_TAB_BY_NAME = new Map(CUSTOM_TABS.map(t => [t.name, t]));
 const FILES_LABEL = (VB_CONFIG.files && VB_CONFIG.files.label) || 'Files';
 const CATEGORIES = [
-  EDITABLE_TAB,
   FILES_TAB,
   TASKS_TAB,
   ...CATEGORY_DEFS.map(c => c.name),
@@ -59,18 +52,18 @@ let docsTree = Object.fromEntries([
   ...CATEGORY_DEFS.map(c => [c.name, { files: [], dirs: [] }]),
   [FILES_TAB, { files: [], dirs: [] }],
 ]);
-// デフォルトは最初のドキュメントカテゴリ（無ければ編集タブ）
-let activeCategory = CATEGORY_DEFS.length > 0 ? CATEGORY_DEFS[0].name : EDITABLE_TAB;
+// デフォルトは最初のドキュメントカテゴリ（無ければ Files タブ）
+let activeCategory = CATEGORY_DEFS.length > 0 ? CATEGORY_DEFS[0].name : FILES_TAB;
 let expanded = {};
 // カテゴリごとのソート設定（'mtime-desc' | 'name-asc'）。loadPersisted で復元する
 let sortByCategory = {};
 
 // 現在開いている編集対象（openDoc で更新）。
-// Root タブ / カテゴリ / この先の Files タブを 1 つの状態で扱う。
+// カテゴリ / Files タブを 1 つの状態で扱う。
 // **API を引くのは path（root 相対）1 本**で、key は hash とサイドバー上の識別子。
 const docState = {
-  tab: null,           // EDITABLE_TAB | カテゴリ名
-  key: null,           // hash 上の識別子（Root: 'TODO.md' / カテゴリ: 'sub/foo.md'）
+  tab: null,           // FILES_TAB | カテゴリ名
+  key: null,           // hash 上の識別子（Files: root 相対パス / カテゴリ: 'sub/foo.md'）
   path: null,          // root 相対パス（例 'docs/plans/foo.md'）
   mode: 'preview',     // 'preview' | 'edit'
   content: '',         // textarea 上の現在値
@@ -123,11 +116,6 @@ function docPathFor(tab, key) {
   if (!key) return null;
   // Files タブの key は既に root 相対パスそのもの
   if (tab === FILES_TAB) return key;
-  if (tab === EDITABLE_TAB) {
-    const f = EDITABLE_BY_NAME.get(key);
-    if (!f) return null;
-    return typeof f.path === 'string' && f.path ? f.path : key;
-  }
   const base = categoryBasePath(tab);
   if (base === null) return null;
   return base ? `${base}/${key}` : key;
@@ -141,8 +129,8 @@ function categoryBasePath(name) {
 }
 
 // root 相対パスをどのタブで開くか決める。
-// preferTab に収まるならそのまま。そうでなければ他のカテゴリ → Root タブの名前付きファイル →
-// Files タブ の順で探す（カテゴリのツリーは .md / .html しか並べないので、他の拡張子は Files へ）。
+// preferTab に収まるならそのまま。そうでなければ他のカテゴリ → Files タブ の順で探す
+// （カテゴリのツリーは .md / .html しか並べないので、他の場所・拡張子は Files へ）。
 function docHashForPath(path, preferTab) {
   const names = [
     ...(preferTab && CATEGORY_BY_NAME.has(preferTab) ? [preferTab] : []),
@@ -155,10 +143,6 @@ function docHashForPath(path, preferTab) {
         return `${name}/${encodePath(path.slice(base.length + 1))}`;
       }
     }
-  }
-  for (const f of EDITABLE_FILES) {
-    const fp = typeof f.path === 'string' && f.path ? f.path : f.name;
-    if (fp === path) return `${EDITABLE_TAB}/${encodeURIComponent(f.name)}`;
   }
   return `${FILES_TAB}/${encodePath(path)}`;
 }
@@ -297,10 +281,10 @@ function decodePath(p) {
 // 本文 (.md-content / TODO ツリー) 内の相対リンクのクリックを SPA の hash 遷移へ変換する。
 // 元の Markdown は無編集のまま（GitHub / VSCode プレビューの相対リンクを壊さない）。
 // 画像・音声等のメディアはサーバ側で /files に書き換え済み（先頭 /）なのでここでは扱わない。
-// **今開いているファイルの場所からの相対**で解決する（Root タブの TODO.md なら root から。
+// **今開いているファイルの場所からの相対**で解決する（Files タブの TODO.md なら root から。
 // 以前は docs/<category>/ の中でしか解決せず、TODO.md の `[plan](docs/plans/x.md)` は
 // ブラウザがそのまま開こうとして 404 になっていた）。
-// 開く先のタブは docHashForPath が決める（カテゴリ → Root → Files）。
+// 開く先のタブは docHashForPath が決める（カテゴリ → Files）。
 // .md#section の section アンカーは SPA 未対応のため落として doc 先頭へ遷移する。
 function resolveDocLinkHash(href) {
   if (!href) return null;
@@ -476,40 +460,14 @@ function renderDir(category, dir, parentPath, depth) {
   return block;
 }
 
-function renderTodoSidebar() {
-  sidebarNav.innerHTML = '';
-  const frag = document.createDocumentFragment();
-  for (const f of EDITABLE_FILES) {
-    const a = document.createElement('a');
-    a.className = 'nav-item';
-    a.href = `#${EDITABLE_TAB}/${encodeURIComponent(f.name)}`;
-    a.dataset.category = EDITABLE_TAB;
-    a.dataset.path = f.name;
-
-    const title = document.createElement('div');
-    title.textContent = f.label;
-    a.appendChild(title);
-
-    const fileName = document.createElement('div');
-    fileName.className = 'nav-item-file';
-    fileName.textContent = f.name;
-    a.appendChild(fileName);
-
-    frag.appendChild(a);
-  }
-  sidebarNav.appendChild(frag);
-  refreshActiveHighlight();
-  refreshSidebarConflictBadge();
-}
-
 // サイドバー上端の行。左にソート切替トグル、右に「+ 新規」。
-// 通常カテゴリのときのみ表示し、TODO タブでは hidden にする。
+// 通常カテゴリと Files のときだけ表示し、Tasks では hidden にする。
 // ソートはアクティブキーに ↑/↓ を併記。アクティブを再クリックすると方向を反転、
 // 非アクティブをクリックするとそのキーの記憶済み方向で切替。
 function renderSidebarHeader() {
   if (!sidebarSort) return;
-  // Root（固定ファイル）と Tasks（タスク一覧）には並び替え・新規は要らない
-  if (activeCategory === EDITABLE_TAB || activeCategory === TASKS_TAB) {
+  // Tasks（タスク一覧）には並び替え・新規は要らない
+  if (activeCategory === TASKS_TAB) {
     sidebarSort.hidden = true;
     sidebarSort.innerHTML = '';
     return;
@@ -559,7 +517,7 @@ function renderSidebarHeader() {
   sidebarSort.appendChild(group);
 
   // Files タブとカテゴリでは新規作成できる。
-  // Root タブ（固定 4 ファイル）と customTab（中身はプラグイン側）には出さない。
+  // customTab（中身はプラグイン側）と Tasks には出さない。
   if (activeCategory === FILES_TAB || CATEGORY_BY_NAME.has(activeCategory)) {
     const newBtn = document.createElement('button');
     newBtn.type = 'button';
@@ -573,11 +531,6 @@ function renderSidebarHeader() {
 
 function renderSidebar() {
   renderSidebarHeader();
-
-  if (activeCategory === EDITABLE_TAB) {
-    renderTodoSidebar();
-    return;
-  }
 
   if (activeCategory === TASKS_TAB) {
     renderTasksSidebar();
@@ -947,7 +900,7 @@ function resetDocState() {
   docState.conflict = null;
 }
 
-// 編集対象を開く。Root タブもカテゴリも同じ経路を通る。
+// 文書を開く。Files もカテゴリも同じ経路を通る。
 // 読み書きは /api/source/<root 相対パス>、プレビューは /api/render/<同> の 2 本だけ。
 async function openDoc(tab, key) {
   clearTocObserver();
@@ -978,7 +931,7 @@ async function openDoc(tab, key) {
       todoTreeState.collapsed = new Set();
     }
 
-    pageTitle.textContent = tab === EDITABLE_TAB ? key.replace(/\.md$/, '') : key.split('/').pop();
+    pageTitle.textContent = key.split('/').pop();
     topbarSub.textContent = path;
     contentArea.innerHTML = '';
     contentArea.appendChild(buildDocLayout());
@@ -1044,9 +997,8 @@ function buildDocLayout() {
     actions.appendChild(archiveBtn);
   }
 
-  // Root タブの 4 件は「決まった名前で並べる」ものなので、ここからは動かさない。
   // 読み取り専用（バイナリ等）でも移動と削除はできる（中身に触らないため）
-  if (docState.tab !== EDITABLE_TAB && docState.path) {
+  if (docState.path) {
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.className = 'doc-action';
@@ -1129,7 +1081,7 @@ async function renderDocPreviewBody() {
     div.className = 'md-content';
     div.innerHTML = data.html;
 
-    const withToc = docState.tab !== EDITABLE_TAB;
+    const withToc = true;
     if (withToc) {
       const layout = document.createElement('div');
       layout.className = 'doc-pane-layout';
@@ -1550,7 +1502,7 @@ async function saveDoc(options = {}) {
     setTimeout(() => selfWrittenMtimes.delete(savedMtime), 5000);
     updateConflictIndicators();
     // 見出しを直すとサイドバーの表示名も変わるので取り直す
-    if (docState.tab !== EDITABLE_TAB) refreshDocsTree();
+    refreshDocsTree();
     showToast('保存しました');
   } catch (err) {
     alert(`保存に失敗しました: ${err.message}`);
@@ -1837,6 +1789,12 @@ function handleRoute() {
     return;
   }
 
+  // 旧 Root タブ（#todo/<name>）は Files タブへ読み替える（Root は廃止。Files が同じ文書ビューアで開く）
+  if (rawHash.startsWith(`${LEGACY_ROOT_TAB}/`)) {
+    location.replace(`#${FILES_TAB}/${rawHash.slice(LEGACY_ROOT_TAB.length + 1)}`);
+    return;
+  }
+
   const parsed = parseHash();
   if (!parsed) {
     refreshActiveHighlight();
@@ -1903,27 +1861,6 @@ function handleRoute() {
     return;
   }
 
-  if (category === EDITABLE_TAB) {
-    if (!EDITABLE_NAMES.includes(filePath)) {
-      if (needSidebarRerender) renderSidebar();
-      else refreshActiveHighlight();
-      setWatchTarget(null);
-      showError('対応していないファイルです');
-      return;
-    }
-    if (!confirmLeaveDoc(EDITABLE_TAB, filePath)) {
-      // 元のファイルに戻す（履歴を増やさないよう replace）
-      const back = currentDocHash();
-      if (back) location.replace(back);
-      return;
-    }
-    if (needSidebarRerender) renderSidebar();
-    else refreshActiveHighlight();
-    setWatchTarget(docPathFor(EDITABLE_TAB, filePath));
-    openDoc(EDITABLE_TAB, filePath);
-    return;
-  }
-
   if (!confirmLeaveDoc(category, filePath)) {
     const back = currentDocHash();
     if (back) location.replace(back);
@@ -1961,13 +1898,12 @@ function handleRoute() {
   }
 }
 
-// 設定された editable / categories / customTabs から topbar の tab ボタンを動的に組み立てる
+// 固定タブ（Tasks / Files）と設定された categories / customTabs から topbar の tab ボタンを動的に組み立てる
 function buildTabs() {
   topbarTabs.innerHTML = '';
   const tabs = [
     ...CUSTOM_TABS.map(t => ({ name: t.name, label: t.label })),
     { name: TASKS_TAB, label: TASKS_LABEL },
-    { name: EDITABLE_TAB, label: EDITABLE_LABEL },
     ...CATEGORY_DEFS.map(c => ({ name: c.name, label: c.label })),
     { name: FILES_TAB, label: FILES_LABEL },
   ];

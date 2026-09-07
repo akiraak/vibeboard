@@ -8,7 +8,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ <project>             Root  Plans  Specs  Files              │
+│ <project>       Tasks  Plans  Specs  Files                   │
 ├──────────────┬───────────────────────────────────────────────┤
 │ 更新日 名前   + 新規 │ # TODO                                 │
 │ docs/plans/  │                                               │
@@ -22,13 +22,13 @@
 ## できること
 
 - `docs/plans/` ・ `docs/specs/` 配下の Markdown / HTML をツリーで一覧・閲覧・編集
-- ルート直下の `TODO.md` ・ `DONE.md` ・ `CLAUDE.md` ・ `README.md` をプレビュー表示しつつ編集
+- ルート直下の `TODO.md` ・ `DONE.md` ・ `CLAUDE.md` ・ `README.md` も Files タブで開いて編集（専用の Root タブは廃止。Files と機能が重なるため）
 - **タスク（`- [ ]`）を含む Markdown は「ツリー」で表示**（`ツリー` / `プレビュー` / `編集` の 3 サブタブ）
   - 字下げを親子として描き、子を持つタスクは畳める。見出しと親には `完了 / 全体` の数
   - 状態は `[ ]` 未着手 / `[x]` 完了 / `[~]` 進行中 / `[-]` 中止。他の 1 文字は未着手扱いで記号を残す
   - タスクの下に字下げした `依存:` / `派生元:` / `関連:` の行を**関係**として読み、チップで両方向に辿れる
     （相手のタスクは `「文面」`、プラン / 仕様は Markdown リンク）。引けない相手は「見つかりません」と出すだけで本文は消えない
-  - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Root タブからでも vibeboard の中で開く
+  - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Files タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
 - **Tasks タブで `TODO.md` のタスクを選び、待ち受けている Claude Code の画面へ渡して実行**
   - ボタンは 3 つ。`実行`（こなして DONE.md へ移す）/ `説明`（変更させず意図・進め方・影響を説明させる）/
@@ -265,7 +265,7 @@ vibeboard listen [options]       Tasks タブの待ち受け（この画面の C
   // 省略時は [plans (archive: true), specs (archive: false)]
   "categories": [
     {
-      "name": "plans",       // 必須。URL/ハッシュに使うスラッグ。'todo' は予約語、ユニーク
+      "name": "plans",       // 必須。URL/ハッシュに使うスラッグ。'todo'・'files'・'tasks' は予約語、ユニーク
       "label": "Plans",      // タブの表示名。省略時は name
       "path": "docs/plans",  // root からの相対パス（または絶対パス）。省略時は `docs/<name>`
       "archive": true        // true で archive ボタンと /archive エンドポイントが有効化される
@@ -273,18 +273,8 @@ vibeboard listen [options]       Tasks タブの待ち受け（この画面の C
     { "name": "specs", "label": "Specs", "path": "docs/specs" }
   ],
 
-  // 編集対象（Root）タブ。タブのスラッグは固定で 'todo'
-  // 省略時は { label: 'Root', files: [TODO.md, DONE.md, CLAUDE.md, README.md] }
-  "editable": {
-    "label": "Root",
-    "files": [
-      // 文字列だけならファイル名そのまま。オブジェクトで label / path をカスタムできる
-      "TODO.md",
-      { "name": "DONE.md", "label": "DONE", "path": "DONE.md" },
-      "CLAUDE.md",
-      "README.md"
-    ]
-  },
+  // editable（旧 Root タブの設定）は廃止した。書いてあっても弾かず無視する
+  // （ルート直下のファイルは Files タブで開ける。起動時に一言出る）
 
   // Files タブ（プロジェクト内の全ファイル）。省略時は { label: 'Files', exclude: ['.git', 'node_modules'] }
   "files": {
@@ -321,14 +311,7 @@ vibeboard listen [options]       Tasks タブの待ち受け（この画面の C
     { "name": "notes",   "label": "Notes",   "path": "notes",          "archive": true },
     { "name": "papers",  "label": "Papers",  "path": "references"      },
     { "name": "designs", "label": "Designs", "path": "docs/designs"    }
-  ],
-  "editable": {
-    "label": "Inbox",
-    "files": [
-      { "name": "INBOX.md",   "label": "Inbox" },
-      { "name": "ARCHIVE.md", "label": "Archive" }
-    ]
-  }
+  ]
 }
 ```
 
@@ -336,13 +319,12 @@ vibeboard listen [options]       Tasks タブの待ち受け（この画面の C
 
 設定ファイル読み込み時に以下を弾く（起動失敗）。
 
-- `categories[].name` が空 / 重複 / `todo`・`files`（予約語） / パス区切り文字を含む
+- `categories[].name` が空 / 重複 / `todo`・`files`・`tasks`（予約語） / パス区切り文字を含む
 - `categories[].path` が root の外を指している
-- `editable.files[].name` が `.md` で終わらない / 重複 / パス区切り文字を含む
-- `editable.files[].path` が root の外を指している
-- `categories` または `editable.files` を空配列にしている（省略してデフォルトに戻す）
+- `categories` を空配列にしている（省略してデフォルトに戻す）
+- （`editable` は旧 Root タブの設定。弾かずに無視し、起動時に一言出す）
 - `files.exclude` が配列でない / 要素が空文字 / パス区切り文字（`/` `\\`）や `.` `..` を含む
-- `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・`files`・categories）と衝突 / 重複
+- `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・`files`・`tasks`・categories）と衝突 / 重複
 - `customTabs[].baseUrl` が空 / URL として不正 / `http`・`https` 以外 / `?` や `#` を含む
 - `customTabs[].command` が文字列 / 配列でない / 空配列 / 要素が空文字
 
@@ -416,7 +398,7 @@ $ ./run-vibeboard.sh
 
 ### 挙動
 
-- **並び順**: customTabs は topbar で他タブ（Root / categories）の**左側**に、配列順で並ぶ。
+- **並び順**: customTabs は topbar で他タブ（Tasks / categories / Files）の**左側**に、配列順で並ぶ。
 - **自動選択**: item を指定せずタブを開くと、サイドバー先頭の項目へ自動遷移する（空ペインを避ける）。
 - **iframe からの遷移**: iframe 内から親の別 item へ移りたいときは
   `parent.postMessage({ type: 'vb-nav', hash: '<tab>/<id>' }, '*')` を送ると vibeboard がハッシュを書き換える。
@@ -440,7 +422,7 @@ node vibeboard/dist/cli.js --root .
 
 `http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md`・`CLAUDE.md`・`README.md` を閲覧・編集できる。
 
-- `Root` タブで `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` をプレビュー表示・編集できる
+- `Files` タブでプロジェクト内のファイル（`TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` を含む）をプレビュー表示・編集できる。`TODO.md` はツリー表示つき
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
 - `Tasks` タブで `TODO.md` のタスクを、待ち受けている Claude Code の画面へ渡して実行できる（実行 / 説明 / 削除）。
