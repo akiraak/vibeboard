@@ -12,11 +12,12 @@ import {
   Registration,
   Registry,
   TaskQueue,
+  findInboxSocket,
   isUnder,
   listClaudeSessions,
   postToInbox,
 } from './tasks';
-import { buildExplainPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
+import { buildExplainPrompt, buildPlanPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
@@ -760,7 +761,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   // **文面はここで TODO.md から組む**（クライアントからは id と決め打ちの値しか受けない）。
   // セッションあての文面はキュー（tmp の JSON）に積み、送り先が登録済みなら即投函、未登録なら登録が来た時点で投函する。
   // listen あては名前で配り、不在なら名前あてに溜めて、同じ名前で繋ぎ直したときに渡す。
-  type TaskItem = { id: string; text: string; kind: 'run' | 'explain'; prompt: string; at: number };
+  type TaskItem = { id: string; text: string; kind: 'run' | 'explain' | 'plan'; prompt: string; at: number };
   const taskWindows = new Map<string, Response>();
   const taskPending = new Map<string, TaskItem[]>();
 
@@ -823,6 +824,17 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
         const live = new Set(result.sessions.map(s => s.sessionId));
         for (const r of registry.list()) {
           if (!live.has(r.sessionId) && Date.now() - r.at > 15000) registry.unregister(r.sessionId);
+        }
+        // 登録の無いセッション（vibeboard より先に起動した / vibeboard を起動し直した後）は、pid から受信口の
+        // 場所を引いて登録し、待っていたぶんを届ける。token は無し（Linux では auth 行を省略できる）
+        if (process.platform === 'linux') {
+          for (const s of result.sessions) {
+            if (s.pid === null || registry.has(s.sessionId)) continue;
+            const socket = findInboxSocket(s.pid);
+            if (!socket) continue;
+            registry.register({ sessionId: s.sessionId, cwd: s.cwd, socket, token: null, pid: s.pid, at: Date.now() });
+            void drain(s.sessionId);
+          }
         }
       }
       return result;
@@ -927,12 +939,14 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       if (code === 'ENOENT' || code === 'ECONNREFUSED') registry.unregister(reg.sessionId);
     }
   };
-  // そのセッションあての「待ち」を順に投函する。登録が無ければ何もしない（登録が来たときにまた呼ばれる）
+  // そのセッションあての「待ち」を順に投函する。登録が無ければ一覧を取り直して pid から引く。
+  // それでも無ければ何もしない（登録が来たとき / 次の一覧で見つかったときにまた呼ばれる）
   const draining = new Set<string>();
   const drain = async (sessionId: string): Promise<void> => {
     if (draining.has(sessionId)) return;
     draining.add(sessionId);
     try {
+      if (!registry.has(sessionId)) await getSessions();
       for (;;) {
         const reg = registry.get(sessionId);
         if (!reg) return;
@@ -1055,7 +1069,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       res.status(400).json({ success: false, data: null, error: 'id が不正です' });
       return;
     }
-    const kind: TaskItem['kind'] = body?.kind === 'explain' ? 'explain' : 'run';
+    const kind: TaskItem['kind'] = body?.kind === 'explain' || body?.kind === 'plan' ? body.kind : 'run';
     const src = readTodoSource();
     if (!src.ok) {
       res.status(src.status).json({ success: false, data: null, error: src.error });
@@ -1063,7 +1077,8 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     }
     const tree = parseTodo(src.raw, { mdPath: 'TODO.md' });
     const ctx = findTaskById(tree, id);
-    const prompt = kind === 'explain' ? buildExplainPrompt(tree, id) : buildPrompt(tree, id);
+    const prompt =
+      kind === 'explain' ? buildExplainPrompt(tree, id) : kind === 'plan' ? buildPlanPrompt(tree, id) : buildPrompt(tree, id);
     if (!ctx || prompt === null) {
       res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
       return;

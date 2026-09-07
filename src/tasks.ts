@@ -142,6 +142,38 @@ export class Registry {
   }
 }
 
+// === 受信口の場所を pid から引く ===
+//
+// hook の登録が無いセッション（vibeboard より先に起動した / vibeboard を起動し直した後）にも届けるための経路。
+// Claude Code は受信口を `<runtime dir>/cc-socks/<pid>.sock` に置く（観測: /run/user/<uid>/cc-socks/<pid>.sock）。
+// token は取れないので auth 行なしで送る。Linux では auth 行は省略でき、受信側が prompting 系なら配送される。
+
+/** pid の受信口がありうる場所を、確からしい順に（重複なし）。純関数。 */
+export function inboxSocketCandidates(
+  pid: number,
+  env: NodeJS.ProcessEnv = process.env,
+  uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null,
+  tmpDir: string = os.tmpdir(),
+): string[] {
+  const dirs: string[] = [];
+  if (env.XDG_RUNTIME_DIR) dirs.push(path.join(env.XDG_RUNTIME_DIR, 'cc-socks'));
+  if (uid !== null) dirs.push(`/run/user/${uid}/cc-socks`, path.join(tmpDir, `cc-socks-${uid}`), `/tmp/cc-socks-${uid}`);
+  dirs.push(path.join(tmpDir, 'cc-socks'), '/tmp/cc-socks');
+  return [...new Set(dirs)].map(d => path.join(d, `${pid}.sock`));
+}
+
+/** 候補のうち実在するソケットの場所。無ければ null。 */
+export function findInboxSocket(pid: number, candidates: string[] = inboxSocketCandidates(pid)): string | null {
+  for (const p of candidates) {
+    try {
+      if (fs.statSync(p).isSocket()) return p;
+    } catch {
+      // 無い / 読めない → 次
+    }
+  }
+  return null;
+}
+
 // === 投函 ===
 
 export interface PostOptions {
@@ -199,7 +231,7 @@ export function postToInbox(socketPath: string, text: string, opts: PostOptions 
 // === キュー ===
 
 export type QueueState = 'waiting' | 'posted' | 'failed';
-export type TaskKind = 'run' | 'explain';
+export type TaskKind = 'run' | 'explain' | 'plan';
 
 export interface QueueItem {
   id: string;
@@ -343,7 +375,7 @@ export class TaskQueue {
       return parsed.items.filter(isQueueItem).map(i => ({
         ...i,
         text: typeof i.text === 'string' ? i.text : '',
-        kind: i.kind === 'explain' ? 'explain' : 'run',
+        kind: i.kind === 'explain' || i.kind === 'plan' ? i.kind : 'run',
         error: typeof i.error === 'string' ? i.error : null,
       }));
     } catch {

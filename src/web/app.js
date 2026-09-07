@@ -2486,6 +2486,7 @@ async function loadTaskTargets(sel, note) {
 }
 
 const QUEUE_STATE_LABEL = { waiting: '待ち', posted: '投函済み', failed: '失敗' };
+const QUEUE_KIND_LABEL = { run: '実行', explain: '説明', plan: 'プラン作成' };
 function fmtClock(ms) {
   const d = new Date(ms);
   const p = n => String(n).padStart(2, '0');
@@ -2512,7 +2513,7 @@ async function renderTaskQueue(box, targetsById, onChange) {
     row.appendChild(mkEl('span', `task-queue-state ${it.state}`, QUEUE_STATE_LABEL[it.state] || it.state));
     const t = targetsById.get(it.sessionId);
     const who = t ? t.name : String(it.sessionId || '').slice(0, 8);
-    row.appendChild(mkEl('span', 'task-queue-text', `${it.kind === 'explain' ? '説明' : '実行'}: ${it.text} → ${who}`));
+    row.appendChild(mkEl('span', 'task-queue-text', `${QUEUE_KIND_LABEL[it.kind] || it.kind}: ${it.text} → ${who}`));
     row.appendChild(mkEl('span', 'task-queue-time', fmtClock(it.updatedAt)));
     if (it.state === 'failed') {
       const b = mkEl('button', null, '再送');
@@ -2585,15 +2586,17 @@ async function renderTaskView(id) {
 
   const rowBtn = el('div', 'task-row');
   const btnRun = el('button', 'primary', '実行');
+  const btnPlan = el('button', null, 'プラン作成');
   const btnExplain = el('button', null, '説明');
   const btnDelete = el('button', 'danger', '削除');
-  for (const b of [btnRun, btnExplain, btnDelete]) b.type = 'button';
-  rowBtn.append(btnRun, btnExplain, btnDelete);
+  for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.type = 'button';
+  rowBtn.append(btnRun, btnPlan, btnExplain, btnDelete);
   pane.appendChild(rowBtn);
 
   const status = el('div', 'task-note', '');
   const hint = el('div', 'task-note',
-    '実行・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
+    '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
+    + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
     + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
     + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
   const queueBox = el('div', 'task-queue');
@@ -2620,10 +2623,10 @@ async function renderTaskView(id) {
     refreshAll();
   }, 5000);
 
-  const setBusy = on => { for (const b of [btnRun, btnExplain, btnDelete]) b.disabled = on; };
+  const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.disabled = on; };
   const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
-    const verb = kind === 'explain' ? '説明を頼み' : '渡し';
+    const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : '渡し';
     const target = parseTargetValue(sel.value);
     setBusy(true);
     status.textContent = '送っています...';
@@ -2659,6 +2662,7 @@ async function renderTaskView(id) {
   };
   refresh.addEventListener('click', refreshAll);
   btnRun.addEventListener('click', () => send('run'));
+  btnPlan.addEventListener('click', () => send('plan'));
   btnExplain.addEventListener('click', () => send('explain'));
   btnDelete.addEventListener('click', async () => {
     if (!confirm('このタスクを TODO.md から削除します（DONE.md には移しません）。よろしいですか？')) return;

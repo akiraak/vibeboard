@@ -539,6 +539,24 @@ export function buildExplainPrompt(tree: TodoTree, id: string): string | null {
   return parts.join('\n');
 }
 
+/**
+ * 「プラン作成」の prompt。プランファイルと TODO.md のリンク・子タスクだけを作らせ、実装には入らせない。
+ * 作業着手ルール（プラン → TODO.md にリンク → Phase / Step を子タスクに）を、このタスクに当てはめた形。
+ */
+export function buildPlanPrompt(tree: TodoTree, id: string): string | null {
+  const ctx = findTaskById(tree, id);
+  if (!ctx) return null;
+  const parts = taskBody(ctx, 'このプロジェクトの TODO.md にある次のタスクのプランを作ってください。');
+  parts.push('やること:');
+  parts.push('1. `docs/plans/<task-name>.md` にプランファイルを作る（目的・背景、対応方針、影響範囲、テスト方針。Phase / Step に分かれるならファイル内でも明示する）');
+  parts.push('2. TODO.md のこのタスクにプランファイルへのリンクを付ける（例: `[plan](docs/plans/<task-name>.md)`）');
+  parts.push('3. Phase / Step があれば、このタスクの子タスク（字下げした `- [ ]`）として TODO.md に足す');
+  parts.push('');
+  parts.push('**プランを作るだけで、実装には着手しないでください。** TODO.md の変更はリンクと子タスクの追加だけにし、DONE.md には移さないでください。');
+  parts.push('プランの書き方にこのプロジェクトの CLAUDE.md の決まりがあれば、それに従ってください。');
+  return parts.join('\n');
+}
+
 function leadWidth(line: string): number {
   return indentWidth((line.match(/^\s*/) as RegExpMatchArray)[0]);
 }

@@ -31,13 +31,16 @@
   - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Files タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
 - **Tasks タブで `TODO.md` のタスクを選び、このプロジェクトで動いている Claude Code のセッションへ渡して実行**
-  - ボタンは 3 つ。`実行`（こなして DONE.md へ移す）/ `説明`（変更させず意図・進め方・影響を説明させる）/
+  - ボタンは 4 つ。`実行`（こなして DONE.md へ移す）/ `プラン作成`（`docs/plans/` のプランファイルと TODO.md へのリンク・
+    子タスクだけを作らせ、実装には入らせない）/ `説明`（変更させず意図・進め方・影響を説明させる）/
     `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
   - 送り先は **`claude agents --json` の一覧から選ぶ**（名前・実行中 / 待機中・登録済みかどうか）。人が待ち受けを起動しなくてよい
   - 届け方は **セッションの受信口（Unix ソケット）への投函**。セッションは起動時の SessionStart hook
     （`vibeboard init` が `.claude/settings.json` に書く）で自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を書く。
     受け取った側では、待機中なら新しいターンが始まり、実行中なら tool 呼び出しの合間に読まれる（承認もその画面で答える）
-  - 送り先が未登録でも受け付けて **待ち** に積み、登録が来た時点で投函する。状態（待ち / 投函済み / 失敗）は画面に出て、
+  - 登録が無くても、Linux なら **`claude agents` の pid から受信口（`$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`）を引いて投函する**
+    （vibeboard より先に起動したセッション、vibeboard を起動し直した後のセッションに効く。auth 行なし）
+  - それでも送り先が未登録なら受け付けて **待ち** に積み、登録が来た時点で投函する。状態（待ち / 投函済み / 失敗）は画面に出て、
     失敗は再送できる。キューは tmp の JSON なので vibeboard を再起動しても消えない
   - hook が使えない環境（古い Claude Code、hooks を書きたくない）では **`vibeboard listen --name <画面の名前>`** を回す。
     その名前が送り先に `listen` として出て、届いた文面（1 タスク = 1 行の JSON）をその画面の Claude Code が実行する
@@ -440,15 +443,16 @@ Tasks タブは、`TODO.md` のタスクから組んだ文面を **Claude Code �
 | 段階 | 使うもの | vibeboard 側 |
 | --- | --- | --- |
 | 送り先の発見 | `claude agents --json --cwd <root>`（対話セッションも background も返る） | `GET /api/tasks/windows`。5 秒は使い回す。`claude` が PATH に無ければ登録だけで一覧を作る |
-| 所在の登録 | SessionStart hook に渡る `CLAUDE_CODE_MESSAGING_SOCKET` / `CLAUDE_CODE_MESSAGING_TOKEN` | `scripts/session-hook.mjs` が `POST /api/tasks/register`。SessionEnd で `unregister`。token はメモリにだけ持つ |
+| 所在の登録 | SessionStart hook に渡る `CLAUDE_CODE_MESSAGING_SOCKET` / `CLAUDE_CODE_MESSAGING_TOKEN` | `scripts/session-hook.mjs` が `POST /api/tasks/register`。SessionEnd で `unregister`。token はメモリにだけ持つ。登録が無ければ（Linux）`claude agents` の pid → `cc-socks/<pid>.sock` を引く（`src/tasks.ts` の `findInboxSocket`） |
 | 配送 | 受信口（Unix ソケット）に `{"type":"auth",...}` と `{"type":"user","message":{"role":"user","content":...}}` を 1 行ずつ | `src/tasks.ts` の `postToInbox`。1 セッションへは 1 秒に 1 件 |
 
 流れ:
 
 1. `vibeboard init` が `.claude/settings.json` に hook を書く（1 回だけ。コミットしてよい）
-2. そのプロジェクトで Claude Code を起動すると、hook がセッションの受信口を vibeboard に登録する（vibeboard が落ちていれば 1 秒で諦めて何もしない）
-3. Tasks タブで送り先を選んで `実行` / `説明` を押すと、文面がキュー（`$TMPDIR/vibeboard-tasks-<root の hash>.json`）に積まれ、
-   登録済みならその場で投函される。未登録なら「待ち」のまま、登録が来た時点で投函する（5 分で「失敗」）
+2. そのプロジェクトで Claude Code を起動すると、hook がセッションの受信口を vibeboard に登録する（vibeboard が落ちていれば 1 秒で諦めて何もしない）。
+   登録はメモリだけなので、vibeboard を後から起動した / 起動し直したセッションは未登録になる。そのぶんは Linux なら pid から受信口を引いて補う
+3. Tasks タブで送り先を選んで `実行` / `プラン作成` / `説明` を押すと、文面がキュー（`$TMPDIR/vibeboard-tasks-<root の hash>.json`）に積まれ、
+   登録済み（pid から引けたものを含む）ならその場で投函される。未登録なら「待ち」のまま、登録が来た時点で投函する（5 分で「失敗」）
 4. 受け取ったセッションでは、待機中なら新しいターンが始まり、実行中なら tool 呼び出しの合間に読まれる。
    届いた文面は他セッションからのものとして扱われ、承認の代わりにはならず、`/` コマンドも実行されない。承認はその画面で答える
 
@@ -483,9 +487,11 @@ node vibeboard/dist/cli.js --root .
 - `Files` タブでプロジェクト内のファイル（`TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` を含む）をプレビュー表示・編集できる。`TODO.md` はツリー表示つき
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
-- `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / 説明 / 削除）。
+- `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / プラン作成 / 説明 / 削除）。
+  プラン作成は `docs/plans/` のプランファイルと `TODO.md` へのリンク・子タスクだけを作らせる（実装はしない）。
   送り先は `claude agents` の一覧から選ぶ。セッションは起動時の hook（`vibeboard init` が `.claude/settings.json` に書く）で
-  自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を投函する。hook が使えない環境では
+  自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を投函する。登録が無くても Linux なら `claude agents` の pid から
+  受信口（`$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`）を引いて投函する。hook が使えない環境では
   `node vibeboard/dist/cli.js listen --name <画面の名前>` を回す
 - ローカル開発専用（本番管理画面とは独立）
 - ポート変更は `--port` または `VIBEBOARD_PORT` 環境変数で指定可能

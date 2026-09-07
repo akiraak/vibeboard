@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const {
   buildExplainPrompt,
+  buildPlanPrompt,
   buildPrompt,
   findTaskById,
   flattenTodo,
@@ -273,6 +274,20 @@ test('説明の prompt は変更を禁じ、DONE.md 移動を含まない', () =
   assert.match(prompt, /親タスク:\n- 親のタスク/);
   assert.match(prompt, /変更しないでください/);
   assert.doesNotMatch(prompt, /DONE\.md に記録/);
+});
+
+test('プラン作成の prompt はプランと TODO.md のリンク・子タスクだけを求め、実装を禁じる', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const prompt = buildPlanPrompt(tree, child.id);
+  assert.match(prompt, /親タスク:\n- 親のタスク/);
+  assert.match(prompt, /- \[ \] 子のタスク/);
+  assert.match(prompt, /docs\/plans\/<task-name>\.md/);
+  assert.match(prompt, /リンクを付ける/);
+  assert.match(prompt, /子タスク/);
+  assert.match(prompt, /実装には着手しないでください/);
+  assert.doesNotMatch(prompt, /DONE\.md に記録/);
+  assert.equal(buildPlanPrompt(tree, 'deadbeef'), null);
 });
 
 test('findTaskById は親の文面の列を返す', () => {

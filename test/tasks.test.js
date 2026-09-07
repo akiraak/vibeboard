@@ -13,6 +13,8 @@ const {
   WAIT_EXPIRED_ERROR,
   enqueue,
   expire,
+  findInboxSocket,
+  inboxSocketCandidates,
   isUnder,
   parseAgentsJson,
   postToInbox,
@@ -184,6 +186,33 @@ test('postToInbox: peer が閉じなくても、書き終えていれば時間�
 });
 
 // === vibeboard init の hooks ===
+
+test('inboxSocketCandidates: XDG_RUNTIME_DIR → /run/user/<uid> → tmp の順。重複なし', () => {
+  const c = inboxSocketCandidates(4242, { XDG_RUNTIME_DIR: '/run/user/1000' }, 1000, '/tmp');
+  assert.equal(c[0], '/run/user/1000/cc-socks/4242.sock');
+  assert.ok(c.includes('/tmp/cc-socks-1000/4242.sock'));
+  assert.ok(c.includes('/tmp/cc-socks/4242.sock'));
+  assert.equal(new Set(c).size, c.length);
+  // XDG_RUNTIME_DIR が無く uid も取れない（POSIX 以外）なら tmp だけ
+  assert.deepEqual(inboxSocketCandidates(7, {}, null, '/var/tmp'), ['/var/tmp/cc-socks/7.sock', '/tmp/cc-socks/7.sock']);
+});
+
+test('findInboxSocket: 実在するソケットだけを返し、普通のファイルや無い場所は飛ばす', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vb-socks-'));
+  const sockPath = path.join(dir, '4242.sock');
+  const filePath = path.join(dir, '4243.sock');
+  fs.writeFileSync(filePath, 'not a socket');
+  const server = net.createServer(() => undefined);
+  await new Promise(resolve => server.listen(sockPath, resolve));
+  try {
+    assert.equal(findInboxSocket(4242, [path.join(dir, 'missing', '4242.sock'), sockPath]), sockPath);
+    assert.equal(findInboxSocket(4243, [filePath]), null);
+    assert.equal(findInboxSocket(1, [path.join(dir, '1.sock')]), null);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('hookCommand: vibeboard が root の中なら root 相対、外なら絶対', () => {
   assert.equal(
