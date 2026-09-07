@@ -508,7 +508,8 @@ function renderTodoSidebar() {
 // 非アクティブをクリックするとそのキーの記憶済み方向で切替。
 function renderSidebarHeader() {
   if (!sidebarSort) return;
-  if (activeCategory === EDITABLE_TAB) {
+  // Root（固定ファイル）と Tasks（タスク一覧）には並び替え・新規は要らない
+  if (activeCategory === EDITABLE_TAB || activeCategory === TASKS_TAB) {
     sidebarSort.hidden = true;
     sidebarSort.innerHTML = '';
     return;
