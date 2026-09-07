@@ -5,7 +5,7 @@ import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, EditableFileConfig, VibeboardConfig } from './config';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import { startSidecars, stopSidecars } from './sidecar';
-import { parseTodo } from './todo';
+import { buildExplainPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
@@ -817,6 +817,150 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       inline: (s) => marked.parseInline(s) as string,
     });
     res.json({ success: true, data: { ...tree, mtime }, error: null });
+  });
+
+  // === Tasks タブ（TODO.md のタスクを、待ち受けている Claude Code へ渡す） ===
+  //
+  // 端末のペインを特定して打ち込むのは WSL では当てにならない（cwd が同じだけのシェルへ
+  // 誤送信する）ので、**待ち受けている画面へ名前で配る**。画面は `vibeboard listen --name <名前>`
+  // で `/api/tasks/inbox` を購読し、届いた文面をそのセッションが実行する。
+  // **文面はここで TODO.md から組む**（クライアントからは id と決め打ちの値しか受けない）。
+  // 送り先が不在なら名前あてに溜め、同じ名前で繋ぎ直したときに渡す。
+  type TaskItem = { id: string; text: string; kind: 'run' | 'explain'; prompt: string; at: number };
+  const taskWindows = new Map<string, Response>();
+  const taskPending = new Map<string, TaskItem[]>();
+
+  // クエリ由来の名前を丸める（制御文字を落とし、長さを絞る）
+  const sanitizeWindowName = (raw: unknown): string => {
+    const s = Array.from(String(raw ?? ''))
+      .filter(c => {
+        const k = c.charCodeAt(0);
+        return k >= 0x20 && k !== 0x7f;
+      })
+      .join('')
+      .trim()
+      .slice(0, 80);
+    return s || 'window';
+  };
+  const readTodoSource = ():
+    | { ok: true; absPath: string; raw: string }
+    | { ok: false; status: number; error: string } => {
+    const resolved = resolveSource(config.root, 'TODO.md', config.files.exclude);
+    if (!resolved.ok) return { ok: false, status: resolved.status, error: resolved.error };
+    if (!fs.existsSync(resolved.absPath) || !fs.statSync(resolved.absPath).isFile()) {
+      return { ok: false, status: 404, error: 'TODO.md が見つかりません' };
+    }
+    return { ok: true, absPath: resolved.absPath, raw: fs.readFileSync(resolved.absPath, 'utf-8') };
+  };
+  const writeTaskItem = (res: Response, item: TaskItem): void => {
+    res.write(`event: task\ndata: ${JSON.stringify(item)}\n\n`);
+  };
+  const deliverToWindow = (name: string, item: TaskItem): boolean => {
+    const w = taskWindows.get(name);
+    if (w) {
+      writeTaskItem(w, item);
+      return true;
+    }
+    const q = taskPending.get(name) ?? [];
+    q.push(item);
+    taskPending.set(name, q);
+    return false;
+  };
+
+  app.get('/api/tasks/windows', (_req: Request, res: Response) => {
+    res.json({ success: true, data: { windows: [...taskWindows.keys()] }, error: null });
+  });
+
+  app.get('/api/tasks/inbox', (req: Request, res: Response) => {
+    const name = sanitizeWindowName(typeof req.query.name === 'string' ? req.query.name : '');
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': ok\n\n');
+    taskWindows.set(name, res);
+    const q = taskPending.get(name);
+    if (q && q.length > 0) {
+      for (const item of q) writeTaskItem(res, item);
+      taskPending.delete(name);
+    }
+    const ping = setInterval(() => res.write(': ping\n\n'), 30000);
+    req.on('close', () => {
+      clearInterval(ping);
+      // 同じ名前で貼り直された新しい接続を消さないよう、自分が現役のときだけ外す
+      if (taskWindows.get(name) === res) taskWindows.delete(name);
+    });
+  });
+
+  app.post('/api/tasks/run', (req: Request, res: Response) => {
+    const body = req.body as { id?: unknown; windowId?: unknown; kind?: unknown } | undefined;
+    const id = typeof body?.id === 'string' ? body.id : '';
+    if (!id) {
+      res.status(400).json({ success: false, data: null, error: 'id が不正です' });
+      return;
+    }
+    const kind: TaskItem['kind'] = body?.kind === 'explain' ? 'explain' : 'run';
+    const src = readTodoSource();
+    if (!src.ok) {
+      res.status(src.status).json({ success: false, data: null, error: src.error });
+      return;
+    }
+    const tree = parseTodo(src.raw, { mdPath: 'TODO.md' });
+    const ctx = findTaskById(tree, id);
+    const prompt = kind === 'explain' ? buildExplainPrompt(tree, id) : buildPrompt(tree, id);
+    if (!ctx || prompt === null) {
+      res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
+      return;
+    }
+    const item: TaskItem = { id, text: ctx.node.text, kind, prompt, at: Date.now() };
+    const windowId =
+      typeof body?.windowId === 'string' && body.windowId ? sanitizeWindowName(body.windowId) : '';
+    if (windowId) {
+      const connected = deliverToWindow(windowId, item);
+      res.json({ success: true, data: { kind, routedTo: windowId, connected }, error: null });
+      return;
+    }
+    // 送り先が未指定: つないでいる画面が 1 つならそこへ。0 個・複数個は選ばせる
+    const names = [...taskWindows.keys()];
+    if (names.length === 1) {
+      deliverToWindow(names[0], item);
+      res.json({ success: true, data: { kind, routedTo: names[0], connected: true }, error: null });
+      return;
+    }
+    res.json({ success: true, data: { kind, routedTo: null, connected: false, windows: names }, error: null });
+  });
+
+  app.post('/api/tasks/delete', (req: Request, res: Response) => {
+    const body = req.body as { id?: unknown } | undefined;
+    const id = typeof body?.id === 'string' ? body.id : '';
+    if (!id) {
+      res.status(400).json({ success: false, data: null, error: 'id が不正です' });
+      return;
+    }
+    const src = readTodoSource();
+    if (!src.ok) {
+      res.status(src.status).json({ success: false, data: null, error: src.error });
+      return;
+    }
+    const next = removeTask(src.raw, id);
+    if (next === null) {
+      res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
+      return;
+    }
+    const tmp = `${src.absPath}.tmp.${process.pid}.${Date.now()}`;
+    try {
+      fs.writeFileSync(tmp, next, 'utf-8');
+      fs.renameSync(tmp, src.absPath); // tmp → 本体の原子的置換
+    } catch {
+      if (fs.existsSync(tmp)) {
+        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+      }
+      res.status(500).json({ success: false, data: null, error: '書き込みに失敗しました' });
+      return;
+    }
+    res.json({ success: true, data: {}, error: null });
   });
 
   // index.html はテンプレ置換しつつ返す（タイトル / クライアント設定の inject）

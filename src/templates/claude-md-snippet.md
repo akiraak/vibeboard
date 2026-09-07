@@ -13,6 +13,8 @@ node vibeboard/dist/cli.js --root .
 - `Root` タブで `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` をプレビュー表示・編集できる
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
+- `Tasks` タブで `TODO.md` のタスクを、待ち受けている Claude Code の画面へ渡して実行できる（実行 / 説明 / 削除）。
+  受け取る側の Claude Code の画面で `node vibeboard/dist/cli.js listen --name <画面の名前>` を回しておく
 - ローカル開発専用（本番管理画面とは独立）
 - ポート変更は `--port` または `VIBEBOARD_PORT` 環境変数で指定可能
 

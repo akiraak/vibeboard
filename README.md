@@ -30,6 +30,14 @@
     （相手のタスクは `「文面」`、プラン / 仕様は Markdown リンク）。引けない相手は「見つかりません」と出すだけで本文は消えない
   - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Root タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
+- **Tasks タブで `TODO.md` のタスクを選び、待ち受けている Claude Code の画面へ渡して実行**
+  - ボタンは 3 つ。`実行`（こなして DONE.md へ移す）/ `説明`（変更させず意図・進め方・影響を説明させる）/
+    `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
+  - 受け取る側の Claude Code の画面で **`vibeboard listen --name <画面の名前>`** を回しておく。
+    Claude Code がその出力（1 タスク = 1 行の JSON）を監視して、その画面で実行する
+  - 送り先は**名前で選ぶ**ので取り違えない。不在中のぶんは名前あてに溜め、つながったら渡す
+  - 文面はサーバが TODO.md から組む（ブラウザからは id と決め打ちの値しか受けない）。
+    バックグラウンドで別セッションは起こさない（承認もその画面でそのまま答える）
 - **Files タブでプロジェクト内のファイルをすべて編集**（テキストエディタと同じ扱い）
   - 拡張子もディレクトリも問わない。`src/` のコードも `package.json` も同じ画面で開ける
   - **dotfile も出す**（`.env` を含む）。除外は既定で `.git/` と `node_modules/` だけ
@@ -195,6 +203,7 @@ vendor 済みの `vibeboard/` 内で `node dist/cli.js ...` として呼び出�
 ```
 vibeboard [options]              管理画面サーバを起動
 vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペットを追記
+vibeboard listen [options]       Tasks タブの待ち受け（この画面の Claude Code がタスクを受け取る）
 ```
 
 サーバ起動オプション:
@@ -215,6 +224,15 @@ vibeboard init [options]         親プロジェクトの CLAUDE.md にスニペ
 | `--root <path>`    | 親プロジェクトのルート (デフォルト: `cwd` / `VIBEBOARD_ROOT`)        |
 | `--dry-run`        | 書き込まずに、書き込まれる内容をプレビュー表示                       |
 | `--help`, `-h`     | `init` のヘルプを表示                                                |
+
+`listen` オプション（Tasks タブの待ち受け。受け取る側の Claude Code の画面で回す）:
+
+| オプション         | 説明                                                                 |
+| ------------------ | -------------------------------------------------------------------- |
+| `--name <s>`       | 画面の名前 (デフォルト: `--root` のディレクトリ名)。同じプロジェクトで複数の画面を待ち受けるときは窓ごとに変える |
+| `--port <n>`       | vibeboard のポート (デフォルト: 設定 / `VIBEBOARD_PORT` / `3010`)      |
+| `--root <path>`    | 対象プロジェクトのルート (デフォルト: `cwd` / `VIBEBOARD_ROOT`)        |
+| `--help`, `-h`     | `listen` のヘルプを表示                                              |
 
 ## 環境変数
 
@@ -425,6 +443,8 @@ node vibeboard/dist/cli.js --root .
 - `Root` タブで `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` をプレビュー表示・編集できる
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
+- `Tasks` タブで `TODO.md` のタスクを、待ち受けている Claude Code の画面へ渡して実行できる（実行 / 説明 / 削除）。
+  受け取る側の Claude Code の画面で `node vibeboard/dist/cli.js listen --name <画面の名前>` を回しておく
 - ローカル開発専用（本番管理画面とは独立）
 - ポート変更は `--port` または `VIBEBOARD_PORT` 環境変数で指定可能
 

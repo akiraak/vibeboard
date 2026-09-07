@@ -4,6 +4,9 @@
 const EDITABLE_TAB = 'todo';
 // プロジェクト内の全ファイルを開くタブ。こちらもスラッグは固定。
 const FILES_TAB = 'files';
+// TODO.md のタスクを、待ち受けている Claude Code へ渡すタブ。スラッグは固定。
+const TASKS_TAB = 'tasks';
+const TASKS_LABEL = 'Tasks';
 
 // サーバから注入された設定。`__VIBEBOARD__` には categories / editable も含まれる。
 const VB_CONFIG = (typeof window !== 'undefined' && window.__VIBEBOARD__) || {};
@@ -27,6 +30,7 @@ const FILES_LABEL = (VB_CONFIG.files && VB_CONFIG.files.label) || 'Files';
 const CATEGORIES = [
   EDITABLE_TAB,
   FILES_TAB,
+  TASKS_TAB,
   ...CATEGORY_DEFS.map(c => c.name),
   ...CUSTOM_TABS.map(t => t.name),
 ];
@@ -571,6 +575,11 @@ function renderSidebar() {
 
   if (activeCategory === EDITABLE_TAB) {
     renderTodoSidebar();
+    return;
+  }
+
+  if (activeCategory === TASKS_TAB) {
+    renderTasksSidebar();
     return;
   }
 
@@ -1879,6 +1888,20 @@ function handleRoute() {
     return;
   }
 
+  if (category === TASKS_TAB) {
+    // Tasks: filePath はタスク id。空なら一覧だけ描き、先頭のタスクへ自動遷移する
+    setWatchTarget(TASKS_TODO_PATH);
+    if (!filePath) {
+      renderTasksSidebar();
+      showEmpty();
+      return;
+    }
+    if (needSidebarRerender) renderSidebar();
+    else refreshActiveHighlight();
+    renderTaskView(filePath);
+    return;
+  }
+
   if (category === EDITABLE_TAB) {
     if (!EDITABLE_NAMES.includes(filePath)) {
       if (needSidebarRerender) renderSidebar();
@@ -1942,6 +1965,7 @@ function buildTabs() {
   topbarTabs.innerHTML = '';
   const tabs = [
     ...CUSTOM_TABS.map(t => ({ name: t.name, label: t.label })),
+    { name: TASKS_TAB, label: TASKS_LABEL },
     { name: EDITABLE_TAB, label: EDITABLE_LABEL },
     ...CATEGORY_DEFS.map(c => ({ name: c.name, label: c.label })),
     { name: FILES_TAB, label: FILES_LABEL },
@@ -2061,6 +2085,11 @@ function setWatchTarget(path) {
       try {
         const payload = JSON.parse(e.data);
         if (typeof payload.path !== 'string' || typeof payload.mtime !== 'number') return;
+        // Tasks タブを開いているときの TODO.md の変更は、一覧と詳細の描き直しに使う
+        if (activeCategory === TASKS_TAB && payload.path === TASKS_TODO_PATH) {
+          refreshTasksTab();
+          return;
+        }
         handleExternalChange(payload.path, payload.mtime);
       } catch {
         // ignore malformed
@@ -2312,6 +2341,260 @@ function refreshSidebarConflictBadge() {
       }
     } else if (badge) {
       badge.remove();
+    }
+  });
+}
+
+// === Tasks タブ（TODO.md のタスクを、待ち受けている Claude Code へ渡す） ===
+//
+// サイドバー = TODO.md のタスク一覧（GET /api/todo/TODO.md。ツリーと同じ解釈）。
+// 詳細 = 部分木・送り先の画面・実行 / 説明 / 削除。
+// 実行・説明は POST /api/tasks/run で待ち受け（inbox）へ渡し、その画面のセッションが実行する。
+// 削除は POST /api/tasks/delete で、サーバが TODO.md からその部分木の行だけを外す。
+// **文面はサーバが組む**。ここから送るのは id と決め打ちの値だけ。
+
+const TASKS_TODO_PATH = 'TODO.md';
+const tasksState = { tree: null, error: null };
+
+async function fetchTasksTree() {
+  try {
+    tasksState.tree = await fetchJson(`/api/todo/${encodePath(TASKS_TODO_PATH)}`);
+    tasksState.error = null;
+  } catch (err) {
+    tasksState.tree = null;
+    tasksState.error = err && err.message ? err.message : String(err);
+  }
+  return tasksState;
+}
+
+// 木を上から順に平らに（親の文面の列つき）
+function flattenTasks(tree) {
+  const out = [];
+  const walk = (nodes, parents) => {
+    for (const n of nodes) {
+      out.push({ node: n, parents });
+      walk(n.children, [...parents, n.text]);
+    }
+  };
+  for (const s of (tree && tree.sections) || []) walk(s.tasks, []);
+  return out;
+}
+
+function findTaskEntry(tree, id) {
+  return flattenTasks(tree).find(e => e.node.id === id) || null;
+}
+
+function renderTaskSubtree(node) {
+  const base = node.depth;
+  const lines = [];
+  const walk = n => {
+    const pad = '  '.repeat(n.depth - base);
+    lines.push(`${pad}- [${n.mark}] ${n.text}`);
+    for (const note of n.notes) lines.push(`${pad}  ${note}`);
+    for (const c of n.children) walk(c);
+  };
+  walk(node);
+  return lines.join('\n');
+}
+
+async function renderTasksSidebar() {
+  sidebarNav.innerHTML = '<div class="loading-text">読み込み中...</div>';
+  const state = await fetchTasksTree();
+  if (activeCategory !== TASKS_TAB) return;
+  sidebarNav.innerHTML = '';
+  if (state.error) {
+    const el = document.createElement('div');
+    el.className = 'error-text';
+    el.textContent = state.error;
+    sidebarNav.appendChild(el);
+    return;
+  }
+  // 済んだタスクは並べない（実行するものではない）
+  const entries = flattenTasks(state.tree).filter(e => e.node.state !== 'done');
+  if (entries.length === 0) {
+    const el = document.createElement('div');
+    el.className = 'loading-text';
+    el.textContent = 'タスク（- [ ] の行）がありません';
+    sidebarNav.appendChild(el);
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  let lastGroup = null;
+  for (const { node } of entries) {
+    const group = node.heading || null;
+    if (group && group !== lastGroup) {
+      const h = document.createElement('div');
+      h.className = 'nav-group-header';
+      h.textContent = group;
+      frag.appendChild(h);
+      lastGroup = group;
+    }
+    const a = document.createElement('a');
+    a.className = 'nav-item';
+    a.href = `#${TASKS_TAB}/${encodeURIComponent(node.id)}`;
+    a.dataset.category = TASKS_TAB;
+    a.dataset.path = node.id;
+    const title = document.createElement('div');
+    title.textContent = `${'　'.repeat(node.depth)}${node.depth > 0 ? '↳ ' : ''}${node.text}`;
+    a.appendChild(title);
+    if (node.state === 'active') {
+      const b = document.createElement('span');
+      b.className = 'nav-item-badge';
+      b.textContent = '●';
+      b.title = '進行中';
+      a.appendChild(b);
+    }
+    frag.appendChild(a);
+  }
+  sidebarNav.appendChild(frag);
+  refreshActiveHighlight();
+
+  // 未選択なら先頭のタスクへ（customTab と同じ振る舞い。空ペインを見せない）
+  const parsed = parseHash();
+  const selected = !!(parsed && parsed.category === TASKS_TAB && parsed.filePath);
+  if (!selected) location.replace(`#${TASKS_TAB}/${encodeURIComponent(entries[0].node.id)}`);
+}
+
+// TODO.md が外で変わったら一覧と詳細を描き直す（SSE の change から呼ばれる）
+function refreshTasksTab() {
+  tasksState.tree = null;
+  renderTasksSidebar();
+  const parsed = parseHash();
+  if (parsed && parsed.category === TASKS_TAB && parsed.filePath) renderTaskView(parsed.filePath);
+}
+
+async function postTasks(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || '失敗しました');
+  return json.data;
+}
+
+async function loadTaskWindows(sel) {
+  const prev = sel.value;
+  try {
+    const data = await fetchJson('/api/tasks/windows');
+    const names = Array.isArray(data.windows) ? data.windows : [];
+    sel.innerHTML = '';
+    if (names.length === 0) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = '(待ち受けている画面がありません)';
+      sel.appendChild(o);
+      return;
+    }
+    for (const n of names) {
+      const o = document.createElement('option');
+      o.value = n;
+      o.textContent = n;
+      sel.appendChild(o);
+    }
+    if (names.includes(prev)) sel.value = prev;
+  } catch {
+    // 取れなければ前の選択のまま
+  }
+}
+
+async function renderTaskView(id) {
+  clearTocObserver();
+  const state = tasksState.tree ? tasksState : await fetchTasksTree();
+  if (activeCategory !== TASKS_TAB) return;
+  const entry = state.tree ? findTaskEntry(state.tree, id) : null;
+  if (!entry) {
+    showError(state.error || 'そのタスクは TODO.md にありません');
+    return;
+  }
+  const { node, parents } = entry;
+  pageTitle.textContent = TASKS_LABEL;
+  topbarSub.textContent = node.text;
+
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const pane = el('div', 'task-pane');
+  pane.appendChild(el('h1', 'task-title', node.text));
+  pane.appendChild(el('div', 'task-meta', [
+    node.heading || '',
+    parents.length > 0 ? `親: ${parents.join(' › ')}` : '',
+    node.id,
+  ].filter(Boolean).join(' ／ ')));
+  pane.appendChild(el('pre', 'task-subtree', renderTaskSubtree(node)));
+
+  const rowWin = el('div', 'task-row');
+  const lbl = el('label', null, '送り先の画面');
+  lbl.htmlFor = 'task-window';
+  const sel = el('select');
+  sel.id = 'task-window';
+  const refresh = el('button', null, '更新');
+  refresh.type = 'button';
+  rowWin.append(lbl, sel, refresh);
+  pane.appendChild(rowWin);
+
+  const rowBtn = el('div', 'task-row');
+  const btnRun = el('button', 'primary', '実行');
+  const btnExplain = el('button', null, '説明');
+  const btnDelete = el('button', 'danger', '削除');
+  for (const b of [btnRun, btnExplain, btnDelete]) b.type = 'button';
+  rowBtn.append(btnRun, btnExplain, btnDelete);
+  pane.appendChild(rowBtn);
+
+  const status = el('div', 'task-note', '');
+  const hint = el('div', 'task-note',
+    '実行・説明は送り先の画面へ渡します（会話も承認もその画面で進む）。説明は変更せず内容を説明するだけ。'
+    + '削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
+    + '待ち受けは、受け取る Claude Code の画面で vibeboard listen --name <画面の名前> を回すか、その画面の Claude Code に頼んでください。');
+  pane.append(status, hint);
+
+  contentArea.innerHTML = '';
+  contentArea.appendChild(pane);
+  loadTaskWindows(sel);
+
+  const setBusy = on => { for (const b of [btnRun, btnExplain, btnDelete]) b.disabled = on; };
+  const send = async kind => {
+    const verb = kind === 'explain' ? '説明を頼み' : '渡し';
+    setBusy(true);
+    status.textContent = '送っています...';
+    try {
+      const data = await postTasks('/api/tasks/run', { id, windowId: sel.value, kind });
+      if (data.routedTo) {
+        status.textContent = data.connected
+          ? `「${data.routedTo}」へ${verb}ました。その画面を見てください。`
+          : `「${data.routedTo}」あてに送りました。今つながっていないので、その画面がつながったら届きます。`;
+      } else if (Array.isArray(data.windows) && data.windows.length > 1) {
+        status.textContent = '送り先の画面を選んでからにしてください。';
+        loadTaskWindows(sel);
+      } else {
+        status.textContent = '待ち受けている画面がありません。受け取る画面で待ち受けを始めてください。';
+      }
+    } catch (err) {
+      status.textContent = `受け渡しに失敗しました: ${err.message}`;
+    } finally {
+      setBusy(false);
+    }
+  };
+  refresh.addEventListener('click', () => loadTaskWindows(sel));
+  btnRun.addEventListener('click', () => send('run'));
+  btnExplain.addEventListener('click', () => send('explain'));
+  btnDelete.addEventListener('click', async () => {
+    if (!confirm('このタスクを TODO.md から削除します（DONE.md には移しません）。よろしいですか？')) return;
+    setBusy(true);
+    status.textContent = '削除しています...';
+    try {
+      await postTasks('/api/tasks/delete', { id });
+      showToast('削除しました');
+      tasksState.tree = null;
+      // 一覧へ戻る（hashchange で一覧を描き直し、先頭のタスクへ自動遷移する）
+      location.replace(`#${TASKS_TAB}/`);
+    } catch (err) {
+      setBusy(false);
+      status.textContent = `削除に失敗しました: ${err.message}`;
     }
   });
 }

@@ -72,7 +72,7 @@ const DEFAULT_EDITABLE: EditableConfig = {
 };
 
 // UI 側で固定のスラッグを持つタブ。カテゴリ名にも customTab 名にも使えない
-const RESERVED_CATEGORY_NAMES = new Set(['todo', 'files']);
+const RESERVED_CATEGORY_NAMES = new Set(['todo', 'files', 'tasks']);
 const FORBIDDEN_PATH_CHARS = /[\/\\]/;
 const CUSTOM_TAB_NAME_RE = /^[a-z0-9][a-z0-9-]*$/i;
 

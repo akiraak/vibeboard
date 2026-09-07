@@ -446,3 +446,146 @@ export function parseTodo(markdown: string, options: ParseTodoOptions = {}): Tod
 export function hasTaskLines(markdown: string): boolean {
   return /^\s*(?:[-*+]|\d+[.)])\s+\[.\]/m.test(String(markdown));
 }
+
+// === Tasks タブ向け: prompt の組み立てと削除（純関数。ファイルもプロセスも触らない） ===
+//
+// Tasks タブは TODO.md のタスクを、待ち受けている Claude Code の画面へ渡して実行させる。
+// **クライアントから来るのは id と決め打ちの値だけ**で、文面はここで木から組む
+// （文面をブラウザから渡させない）。削除も id だけを受け、対象の部分木の行だけを外す。
+
+export interface TaskContext {
+  node: TodoNode;
+  /** 根からその親までの文面（浅い順）。子項目だけ渡すと何の話か分からないので文脈に添える */
+  parentTexts: string[];
+}
+
+/** 木を上から順に平らに並べる（サイドバーの並び順そのもの）。 */
+export function flattenTodo(tree: TodoTree): TodoNode[] {
+  const out: TodoNode[] = [];
+  const walk = (nodes: TodoNode[]) => {
+    for (const n of nodes) {
+      out.push(n);
+      walk(n.children);
+    }
+  };
+  for (const s of tree.sections) walk(s.tasks);
+  return out;
+}
+
+function findIn(nodes: TodoNode[], id: string, parents: string[]): TaskContext | null {
+  for (const n of nodes) {
+    if (n.id === id) return { node: n, parentTexts: parents };
+    const deeper = findIn(n.children, id, [...parents, n.text]);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+/** id のタスクと、親の文面の列。無ければ null。 */
+export function findTaskById(tree: TodoTree, id: string): TaskContext | null {
+  for (const s of tree.sections) {
+    const found = findIn(s.tasks, id, []);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** そのタスクと子孫を、元の見た目のまま組み直す（メモ行も含める）。 */
+export function renderSubtree(node: TodoNode): string {
+  const base = node.depth;
+  const lines: string[] = [];
+  const walk = (n: TodoNode) => {
+    const pad = '  '.repeat(n.depth - base);
+    lines.push(`${pad}- [${n.mark}] ${n.text}`);
+    for (const note of n.notes) lines.push(`${pad}  ${note}`);
+    for (const c of n.children) walk(c);
+  };
+  walk(node);
+  return lines.join('\n');
+}
+
+function taskBody(ctx: TaskContext, lead: string): string[] {
+  const parts = [lead, ''];
+  if (ctx.node.heading) parts.push(`## ${ctx.node.heading}`, '');
+  if (ctx.parentTexts.length > 0) {
+    parts.push('親タスク:');
+    ctx.parentTexts.forEach((t, i) => parts.push(`${'  '.repeat(i)}- ${t}`));
+    parts.push('');
+  }
+  parts.push('対象のタスク:', renderSubtree(ctx.node), '');
+  return parts;
+}
+
+/**
+ * 「実行」の prompt。タスクをこなし、終わったら DONE.md へ移させる。
+ * DONE.md へ移すのは**選択肢にしない**（済んだ項目が TODO.md に残るのはただの取りこぼし）。
+ */
+export function buildPrompt(tree: TodoTree, id: string): string | null {
+  const ctx = findTaskById(tree, id);
+  if (!ctx) return null;
+  const parts = taskBody(ctx, 'このプロジェクトの TODO.md にある次のタスクに取り組んでください。');
+  parts.push('進め方はこのプロジェクトの CLAUDE.md に従ってください。');
+  parts.push('終わったら TODO.md から該当項目を消し、DONE.md に記録してください。');
+  return parts.join('\n');
+}
+
+/** 「説明」の prompt。実行させず、意図・進め方・影響を説明させるだけ。ファイルは何も変えさせない。 */
+export function buildExplainPrompt(tree: TodoTree, id: string): string | null {
+  const ctx = findTaskById(tree, id);
+  if (!ctx) return null;
+  const parts = taskBody(ctx, 'このプロジェクトの TODO.md にある次のタスクを説明してください。');
+  parts.push('このタスクの意図・進め方・影響する範囲を説明してください。');
+  parts.push('**コードも TODO.md も変更しないでください（説明だけ）。**');
+  return parts.join('\n');
+}
+
+function leadWidth(line: string): number {
+  return indentWidth((line.match(/^\s*/) as RegExpMatchArray)[0]);
+}
+
+/**
+ * ノード（＝その部分木）が占める元テキストの行範囲 [start, end)（0 始まり）。
+ * 判定は字下げ: そのノードより深いタスク行と、幅がノード以上のメモ行と、間の空行が範囲。
+ * 兄弟以下のタスク・見出し・浅いメモ行で止まる。末尾の空行は含めない。
+ * メモ行の持ち主は parseTodo と同じ規則（幅がノード以上なら node かその子孫のもの）。
+ */
+function nodeSpan(lines: string[], node: TodoNode): { start: number; end: number } {
+  const start = node.line - 1;
+  const head = lines[start] ?? '';
+  const m0 = TASK_RE.exec(head);
+  const ni = m0 ? indentWidth(m0[1]) : leadWidth(head);
+  let last = start;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') continue;
+    if (HEADING_RE.test(line)) break;
+    const m = TASK_RE.exec(line);
+    if (m) {
+      if (indentWidth(m[1]) <= ni) break;
+      last = i;
+      continue;
+    }
+    if (leadWidth(line) < ni) break;
+    last = i;
+  }
+  return { start, end: last + 1 };
+}
+
+/**
+ * TODO.md のテキストから、そのタスク（部分木）だけを外して返す。見つからなければ null。
+ * 消すのは対象の行・付随するメモ行・子孫のタスクだけ。兄弟や他の節・前後の行は残す。
+ * 改行コードは元のまま。前後が空行なら二重空行を避けて手前の空行を 1 つ落とす。
+ */
+export function removeTask(markdown: string, id: string): string | null {
+  const src = String(markdown);
+  const eol = src.includes('\r\n') ? '\r\n' : '\n';
+  const lines = src.split(/\r?\n/);
+  const ctx = findTaskById(parseTodo(src), id);
+  if (!ctx) return null;
+  const { start, end } = nodeSpan(lines, ctx.node);
+  let from = start;
+  const beforeBlank = from > 0 && lines[from - 1].trim() === '';
+  const afterBlank = end >= lines.length || lines[end].trim() === '';
+  if (beforeBlank && afterBlank) from -= 1;
+  return [...lines.slice(0, from), ...lines.slice(end)].join(eol);
+}

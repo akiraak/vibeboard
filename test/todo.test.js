@@ -4,7 +4,17 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { hasTaskLines, parseRelationLine, parseTodo, resolveDocPath } = require('../dist/todo.js');
+const {
+  buildExplainPrompt,
+  buildPrompt,
+  findTaskById,
+  flattenTodo,
+  hasTaskLines,
+  parseRelationLine,
+  parseTodo,
+  removeTask,
+  resolveDocPath,
+} = require('../dist/todo.js');
 
 const SAMPLE = [
   '# TODO',
@@ -219,4 +229,88 @@ test('タスク行があるかの判定', () => {
   assert.equal(hasTaskLines('1. [x] a'), true);
   assert.equal(hasTaskLines('- a\n- b'), false);
   assert.equal(hasTaskLines(''), false);
+});
+
+// === Tasks タブ向け: prompt の組み立てと削除 ===
+
+const TASK_SAMPLE = [
+  '# TODO',
+  '',
+  '## ツール',
+  '',
+  '- [ ] 親のタスク',
+  '  - [ ] 子のタスク',
+  '    - [x] 済んだ孫',
+  '  → プラン: `docs/plans/foo.md`',
+  '- [ ] もう 1 件',
+  '',
+  '## 決まったこと',
+  '',
+  '- これはタスクではない',
+].join('\n');
+
+function byText(tree, text) {
+  return flattenTodo(tree).find(n => n.text === text);
+}
+
+test('実行の prompt には見出し・親・部分木・DONE.md 移動が入る', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const prompt = buildPrompt(tree, child.id);
+  assert.match(prompt, /## ツール/);
+  assert.match(prompt, /親タスク:\n- 親のタスク/);
+  assert.match(prompt, /- \[ \] 子のタスク/);
+  assert.match(prompt, /- \[x\] 済んだ孫/);
+  assert.match(prompt, /→ プラン/);
+  assert.match(prompt, /TODO\.md から該当項目を消し、DONE\.md に記録/);
+  assert.equal(buildPrompt(tree, 'deadbeef'), null);
+});
+
+test('説明の prompt は変更を禁じ、DONE.md 移動を含まない', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const prompt = buildExplainPrompt(tree, child.id);
+  assert.match(prompt, /親タスク:\n- 親のタスク/);
+  assert.match(prompt, /変更しないでください/);
+  assert.doesNotMatch(prompt, /DONE\.md に記録/);
+});
+
+test('findTaskById は親の文面の列を返す', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const grand = byText(tree, '済んだ孫');
+  assert.deepEqual(findTaskById(tree, grand.id).parentTexts, ['親のタスク', '子のタスク']);
+  assert.equal(findTaskById(tree, 'deadbeef'), null);
+});
+
+test('削除は対象の部分木だけを消し、兄弟・他の節・前後の行は残す', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const next = removeTask(TASK_SAMPLE, child.id);
+  assert.ok(!next.includes('子のタスク'));
+  assert.ok(!next.includes('済んだ孫')); // 子孫も消える
+  assert.ok(!next.includes('docs/plans/foo.md')); // 付随するメモも消える
+  assert.ok(next.includes('親のタスク')); // 親は残る
+  assert.ok(next.includes('もう 1 件')); // 兄弟は残る
+  assert.ok(next.includes('## 決まったこと')); // 他の節は残る
+  assert.equal(findTaskById(parseTodo(next), child.id), null);
+});
+
+test('削除は親を消すと子孫ごと消える', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const parent = byText(tree, '親のタスク');
+  const next = removeTask(TASK_SAMPLE, parent.id);
+  for (const t of ['親のタスク', '子のタスク', '済んだ孫']) assert.ok(!next.includes(t));
+  assert.ok(next.includes('もう 1 件'));
+  assert.ok(next.includes('# TODO'));
+});
+
+test('削除は改行コードを変えない / 無い id は null', () => {
+  const crlf = '# TODO\r\n\r\n- [ ] A\r\n- [ ] B\r\n';
+  const tree = parseTodo(crlf);
+  const next = removeTask(crlf, byText(tree, 'A').id);
+  assert.ok(next.includes('\r\n'));
+  const lines = next.split('\r\n');
+  assert.ok(!lines.includes('- [ ] A'));
+  assert.ok(lines.includes('- [ ] B'));
+  assert.equal(removeTask(crlf, 'deadbeef'), null);
 });
