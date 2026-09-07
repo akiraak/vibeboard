@@ -157,16 +157,22 @@ npx -y degit akiraak/vibeboard#abc1234 vibeboard
 
 ### upstream の取り込み直し
 
-vibeboard 本体に改善が入ったら、再 degit で上書き取り込みして、ローカルカスタマイズ差分を
-手作業でマージし直す運用になる（degit には `.git` が無いので、カスタマイズ差分は
-親リポジトリの git 履歴から拾う）。
+vibeboard 本体に改善が入ったら、`vibeboard update` で取り込み直す。再 degit → `vibeboard/` への同期
+（`node_modules` / `dist` は残し、上流に無いファイルは消す）→ `npm install`（build と、ルートの
+`run-vibeboard.sh` の更新）→ `vibeboard init`（CLAUDE.md のスニペットと hooks）まで 1 コマンドで進み、
+`--restart` を付けると同じ root で動いている vibeboard をバックグラウンドで起動し直す（ポートガードが古い方を止める。
+ログは `$TMPDIR/vibeboard-<port>.log`）。
 
 ```bash
-rm -rf vibeboard
-npx -y degit akiraak/vibeboard vibeboard
-cd vibeboard && npm install   # ルートの run-vibeboard.sh も postinstall で更新される
-# 親リポジトリの git diff で残っていたローカル改変を確認しつつ、必要分を再適用
+node vibeboard/dist/cli.js update --restart          # プロジェクトルートから
+./run-vibeboard.sh --update                          # 取り込み直してから前面で起動（起動し直しの代わり）
+node vibeboard/dist/cli.js update --ref v0.2.0       # ref（tag / commit）を固定して取り込む
+node vibeboard/dist/cli.js update --from ../vibeboard --restart   # ローカルの開発クローンから取り込む
+node vibeboard/dist/cli.js update --dry-run          # 何が上書き・削除されるかだけ見る
 ```
+
+`vibeboard/` に手を入れている場合、その差分は上書きで消える（vendor は上流の写しとして扱い、カスタマイズは
+親リポジトリの git 履歴から拾って再適用する）。`--dry-run` で削除されるファイルを先に確かめられる。
 
 ## サンプルで試す
 
@@ -495,6 +501,7 @@ node vibeboard/dist/cli.js --root .
   `node vibeboard/dist/cli.js listen --name <画面の名前>` を回す
 - ローカル開発専用（本番管理画面とは独立）
 - ポート変更は `--port` または `VIBEBOARD_PORT` 環境変数で指定可能
+- 本体の更新は `node vibeboard/dist/cli.js update --restart`（再 degit → `npm install` → `init` → 同じ root の vibeboard の起動し直し、を 1 コマンドで）
 
 ## タスク管理ルール
 

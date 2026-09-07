@@ -5,6 +5,7 @@ import path from 'path';
 import { resolveConfig } from './config';
 import { startServer } from './server';
 import { runInit } from './init';
+import { runUpdate } from './update';
 
 const args = process.argv.slice(2);
 
@@ -21,6 +22,7 @@ function printHelp(): void {
   vibeboard [options]              管理画面サーバを起動
   vibeboard init [options]         親プロジェクトに規約スニペット（CLAUDE.md）と hooks（.claude/settings.json）を書く
   vibeboard listen [options]       Tasks タブの待ち受け（hook が使えない環境の逃げ道）
+  vibeboard update [options]       vendor した vibeboard 本体を最新にする（degit → npm install → init → 任意で起動し直し）
 
 サーバ起動オプション:
   --root <path>     対象プロジェクトのルート (デフォルト: cwd)
@@ -40,6 +42,14 @@ listen オプション:
   --name <s>        画面の名前 (デフォルト: --root のディレクトリ名)
   --port <n>        vibeboard のポート (デフォルト: 設定 / VIBEBOARD_PORT / 3010)
   --help, -h        listen のヘルプを表示
+
+update オプション:
+  --root <path>     親プロジェクトのルート (デフォルト: cwd)。vendor 先は <root>/vibeboard
+  --ref <s>         取り込む ref（tag / branch / commit。デフォルト: 既定ブランチ）
+  --from <path>     GitHub の代わりにローカルのディレクトリから取り込む
+  --restart         取り込み後、同じ root の vibeboard をバックグラウンドで起動し直す
+  --dry-run         何が変わるかだけ表示
+  --help, -h        update のヘルプを表示
 
 環境変数:
   VIBEBOARD_ROOT    --root と同等
@@ -103,6 +113,80 @@ if (sub === 'init') {
     process.exit(1);
   }
   process.exit(0);
+}
+
+function printUpdateHelp(): void {
+  console.log(`vibeboard update - vendor した vibeboard 本体を最新にする
+
+挙動:
+  1. GitHub から degit する（--from ならローカルのディレクトリから）
+  2. <root>/vibeboard へ同期する（node_modules / dist / .git は触らない。上流に無いファイルは消す）
+  3. npm install（build と、ルートの run-vibeboard.sh の更新）
+  4. vibeboard init（CLAUDE.md のスニペットと .claude/settings.json の hooks）
+  5. --restart なら同じ root の vibeboard をバックグラウンドで起動し直す（動いていなければ起動する）。
+     ログは $TMPDIR/vibeboard-<port>.log。ポートは vibeboard.config.json / VIBEBOARD_PORT / 3010
+
+  vibeboard/ に手を入れている場合、その差分は上書きで消える（vendor は上流の写しとして扱う）。
+
+オプション:
+  --root <path>     親プロジェクトのルート (デフォルト: cwd / VIBEBOARD_ROOT)
+  --ref <s>         取り込む ref（tag / branch / commit。デフォルト: 既定ブランチ）
+  --from <path>     GitHub の代わりにローカルのディレクトリから取り込む
+  --restart         取り込み後に起動し直す
+  --dry-run         何が変わるかだけ表示（同期も npm install もしない）
+  --help, -h        このヘルプを表示
+`);
+}
+
+if (sub === 'update') {
+  const updateArgs = args.slice(1);
+  if (updateArgs.includes('--help') || updateArgs.includes('-h')) {
+    printUpdateHelp();
+    process.exit(0);
+  }
+  let ref: string | null = null;
+  let from: string | null = null;
+  const rest: string[] = [];
+  for (let i = 0; i < updateArgs.length; i++) {
+    const a = updateArgs[i];
+    if (a === '--ref' || a === '--from') {
+      const v = updateArgs[i + 1] ?? '';
+      if (a === '--ref') ref = v;
+      else from = v;
+      i++;
+      continue;
+    }
+    const m = a.match(/^--(ref|from)=(.*)$/);
+    if (m) {
+      if (m[1] === 'ref') ref = m[2];
+      else from = m[2];
+      continue;
+    }
+    if (a === '--restart' || a === '--dry-run') continue;
+    rest.push(a);
+  }
+  try {
+    // --root / VIBEBOARD_ROOT は resolveConfig が解決する（port などは捨てる）
+    const { config } = resolveConfig(rest);
+    runUpdate({
+      root: config.root,
+      ref: ref || null,
+      from: from || null,
+      restart: updateArgs.includes('--restart'),
+      dryRun: updateArgs.includes('--dry-run'),
+    }).then(
+      () => process.exit(0),
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[vibeboard update] 失敗しました: ${msg}`);
+        process.exit(1);
+      },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[vibeboard update] 失敗しました: ${msg}`);
+    process.exit(1);
+  }
 }
 
 function failToStart(err: unknown): never {
@@ -174,7 +258,9 @@ function runListen(opts: { port: number; name: string }): void {
   connect();
 }
 
-if (sub === 'listen') {
+if (sub === 'update') {
+  // 上で処理済み（非同期に進むので、ここでサーバを起動しないように分けておく）
+} else if (sub === 'listen') {
   const listenArgs = args.slice(1);
   if (listenArgs.includes('--help') || listenArgs.includes('-h')) {
     printListenHelp();
