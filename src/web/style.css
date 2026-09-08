@@ -1530,10 +1530,30 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .task-targets-note { margin: -4px 0 12px; }
 .task-queue { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
 .task-queue h2 { font-size: 13px; font-weight: 600; color: var(--text-mute); margin: 0 0 6px; }
-/* プロジェクト全体の操作（タスクに紐づかないので、タスクのボタン列から離して置く） */
-.task-global { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 12px; }
-.task-global h2 { font-size: 13px; font-weight: 600; color: var(--text-mute); margin: 0 0 6px; }
-.task-global .task-row { margin-bottom: 6px; }
+/* 左ペインの上の「プロジェクト全体」の操作（タスクに紐づかない） */
+.tasks-global {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.tasks-global-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-sub); }
+.tasks-global-btn {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.tasks-global-btn:hover { background: var(--hover); }
+.tasks-global-btn:disabled { opacity: 0.5; cursor: default; }
+.tasks-global-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .task-queue-item {
   display: flex;
   align-items: baseline;

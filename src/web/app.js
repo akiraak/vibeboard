@@ -2385,8 +2385,54 @@ function toggleTaskFold(id, expandedNow) {
   saveTasksTreeState();
   paintTasksSidebar(tasksState);
 }
+// 左ペインの上の「プロジェクト全体」の操作。タスクには紐づかない（id を送らない）。
+// 送り先は右の画面の選択（#task-window）を借りる。無ければサーバに任せる（今すぐ送れる先が 1 つならそこへ）
+async function sendCommitAndPush(btn) {
+  const sel = document.getElementById('task-window');
+  const target = sel ? parseTargetValue(sel.value) : null;
+  const targetName = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '';
+  btn.disabled = true;
+  try {
+    const body = { kind: 'commit' };
+    if (target && target.kind === 'listen') body.windowId = target.id;
+    else if (target && target.kind === 'session') body.sessionId = target.id;
+    const data = await postTasks('/api/tasks/run', body);
+    const name = targetName || String(data.routedTo || '').slice(0, 8);
+    if (data.item) {
+      if (data.item.state === 'posted') showToast(`「${name}」に commit & push を頼みました。そのセッションの画面を見てください。`, 4000);
+      else if (data.item.state === 'waiting') showToast(`「${name}」は未登録なので待ちに積みました（5 分で失敗にします）。`, 4000);
+      else showToast(`「${name}」への投函に失敗しました: ${data.item.error || ''}`, 5000);
+    } else if (data.routedTo) {
+      showToast(data.connected ? `「${data.routedTo}」に commit & push を頼みました。` : `「${data.routedTo}」あてに溜めました（つながったら届きます）。`, 4000);
+    } else if (Array.isArray(data.targets) && data.targets.length > 1) {
+      showToast('送り先が複数あります。右の画面で送り先を選んでからにしてください。', 4000);
+    } else {
+      showToast('送り先がありません。このプロジェクトで Claude Code を起動してください。', 4000);
+    }
+  } catch (err) {
+    showToast(`受け渡しに失敗しました: ${err.message}`, 5000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+function renderTasksGlobalBar() {
+  const bar = document.createElement('div');
+  bar.className = 'tasks-global';
+  const label = document.createElement('span');
+  label.className = 'tasks-global-label';
+  label.textContent = 'プロジェクト全体';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tasks-global-btn';
+  btn.textContent = 'commit & push';
+  btn.title = '作業ツリーの変更をまとめてコミットして push するよう、送り先のセッションに頼む（タスクとは無関係）';
+  btn.addEventListener('click', () => sendCommitAndPush(btn));
+  bar.append(label, btn);
+  return bar;
+}
 function paintTasksSidebar(state) {
   sidebarNav.innerHTML = '';
+  sidebarNav.appendChild(renderTasksGlobalBar());
   if (state.error) {
     const el = document.createElement('div');
     el.className = 'error-text';
@@ -2700,22 +2746,6 @@ async function renderTaskView(id) {
   queueBox.hidden = true;
   pane.append(status, hint, queueBox);
 
-  // プロジェクト全体の操作。上のタスクには紐づかないので、タスクのボタン列とは区画を分ける
-  const globalBox = el('div', 'task-global');
-  globalBox.appendChild(el('h2', null, 'プロジェクト全体'));
-  const rowGlobal = el('div', 'task-row');
-  const btnCommit = el('button', null, 'commit & push');
-  btnCommit.type = 'button';
-  rowGlobal.appendChild(btnCommit);
-  const globalStatus = el('div', 'task-note', '');
-  globalBox.append(
-    rowGlobal,
-    globalStatus,
-    el('div', 'task-note', '作業ツリーの変更をまとめてコミットして push するよう、上の送り先のセッションに頼みます（選択中のタスクとは無関係）。'
-      + 'git status / diff の確認、済んだタスクの DONE.md への移動、コミットメッセージ、秘密を含めない判断は、そのセッションが承認の中で行います。'),
-  );
-  pane.appendChild(globalBox);
-
   contentArea.innerHTML = '';
   contentArea.appendChild(pane);
 
@@ -2736,17 +2766,15 @@ async function renderTaskView(id) {
     refreshAll();
   }, 5000);
 
-  const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnCommit, btnDelete]) b.disabled = on; };
-  const statusFor = kind => (kind === 'commit' ? globalStatus : status);
+  const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.disabled = on; };
   const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
     const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : kind === 'commit' ? 'commit & push を頼み' : '渡し';
     const target = parseTargetValue(sel.value);
-    const status = statusFor(kind);
     setBusy(true);
     status.textContent = '送っています...';
     try {
-      const body = kind === 'commit' ? { kind } : { id, kind };
+      const body = { id, kind };
       if (target && target.kind === 'listen') body.windowId = target.id;
       else if (target && target.kind === 'session') body.sessionId = target.id;
       const data = await postTasks('/api/tasks/run', body);
@@ -2779,7 +2807,6 @@ async function renderTaskView(id) {
   btnRun.addEventListener('click', () => send('run'));
   btnPlan.addEventListener('click', () => send('plan'));
   btnExplain.addEventListener('click', () => send('explain'));
-  btnCommit.addEventListener('click', () => send('commit'));
   btnDelete.addEventListener('click', async () => {
     if (!confirm('このタスクを TODO.md から削除します（DONE.md には移しません）。よろしいですか？')) return;
     setBusy(true);
