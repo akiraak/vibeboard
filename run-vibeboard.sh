@@ -65,7 +65,7 @@ main() {
   # Node 側が解決するため、ここでは表示しない（実ポートは起動直後の
   # "[vibeboard] running at ..." が出す）。
   echo "[run-vibeboard] vibeboard を起動します (root: ${VIBEBOARD_ROOT:-$PROJECT_DIR})"
-  exec node dist/cli.js "${ROOT_ARGS[@]}" "${PASS[@]}"
+  exec node dist/cli.js ${ROOT_ARGS[@]+"${ROOT_ARGS[@]}"} ${PASS[@]+"${PASS[@]}"}
 }
 
 main "$@"
