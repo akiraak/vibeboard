@@ -1530,6 +1530,10 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .task-targets-note { margin: -4px 0 12px; }
 .task-queue { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
 .task-queue h2 { font-size: 13px; font-weight: 600; color: var(--text-mute); margin: 0 0 6px; }
+/* プロジェクト全体の操作（タスクに紐づかないので、タスクのボタン列から離して置く） */
+.task-global { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 12px; }
+.task-global h2 { font-size: 13px; font-weight: 600; color: var(--text-mute); margin: 0 0 6px; }
+.task-global .task-row { margin-bottom: 6px; }
 .task-queue-item {
   display: flex;
   align-items: baseline;

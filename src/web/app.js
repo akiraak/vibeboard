@@ -2685,22 +2685,36 @@ async function renderTaskView(id) {
   const btnRun = el('button', 'primary', '実行');
   const btnPlan = el('button', null, 'プラン作成');
   const btnExplain = el('button', null, '説明');
-  const btnCommit = el('button', null, 'commit & push');
   const btnDelete = el('button', 'danger', '削除');
-  for (const b of [btnRun, btnPlan, btnExplain, btnCommit, btnDelete]) b.type = 'button';
-  rowBtn.append(btnRun, btnPlan, btnExplain, btnCommit, btnDelete);
+  for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.type = 'button';
+  rowBtn.append(btnRun, btnPlan, btnExplain, btnDelete);
   pane.appendChild(rowBtn);
 
   const status = el('div', 'task-note', '');
   const hint = el('div', 'task-note',
-    '実行・プラン作成・説明・commit & push は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
+    '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
     + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
-    + '説明は変更せず内容を説明するだけ。commit & push はこのタスクのぶんの変更をコミットして push させます（メッセージと TODO.md / DONE.md の整理はセッションが行う）。'
-    + '削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
+    + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
     + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
   const queueBox = el('div', 'task-queue');
   queueBox.hidden = true;
   pane.append(status, hint, queueBox);
+
+  // プロジェクト全体の操作。上のタスクには紐づかないので、タスクのボタン列とは区画を分ける
+  const globalBox = el('div', 'task-global');
+  globalBox.appendChild(el('h2', null, 'プロジェクト全体'));
+  const rowGlobal = el('div', 'task-row');
+  const btnCommit = el('button', null, 'commit & push');
+  btnCommit.type = 'button';
+  rowGlobal.appendChild(btnCommit);
+  const globalStatus = el('div', 'task-note', '');
+  globalBox.append(
+    rowGlobal,
+    globalStatus,
+    el('div', 'task-note', '作業ツリーの変更をまとめてコミットして push するよう、上の送り先のセッションに頼みます（選択中のタスクとは無関係）。'
+      + 'git status / diff の確認、済んだタスクの DONE.md への移動、コミットメッセージ、秘密を含めない判断は、そのセッションが承認の中で行います。'),
+  );
+  pane.appendChild(globalBox);
 
   contentArea.innerHTML = '';
   contentArea.appendChild(pane);
@@ -2723,14 +2737,16 @@ async function renderTaskView(id) {
   }, 5000);
 
   const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnCommit, btnDelete]) b.disabled = on; };
+  const statusFor = kind => (kind === 'commit' ? globalStatus : status);
   const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
     const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : kind === 'commit' ? 'commit & push を頼み' : '渡し';
     const target = parseTargetValue(sel.value);
+    const status = statusFor(kind);
     setBusy(true);
     status.textContent = '送っています...';
     try {
-      const body = { id, kind };
+      const body = kind === 'commit' ? { kind } : { id, kind };
       if (target && target.kind === 'listen') body.windowId = target.id;
       else if (target && target.kind === 'session') body.sessionId = target.id;
       const data = await postTasks('/api/tasks/run', body);

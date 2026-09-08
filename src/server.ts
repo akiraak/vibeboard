@@ -1066,28 +1066,34 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
 
   app.post('/api/tasks/run', wrap(async (req, res) => {
     const body = req.body as { id?: unknown; windowId?: unknown; sessionId?: unknown; kind?: unknown } | undefined;
-    const id = typeof body?.id === 'string' ? body.id : '';
-    if (!id) {
-      res.status(400).json({ success: false, data: null, error: 'id が不正です' });
-      return;
-    }
     const kind: TaskKind = (TASK_KINDS as readonly unknown[]).includes(body?.kind) ? (body?.kind as TaskKind) : 'run';
-    const src = readTodoSource();
-    if (!src.ok) {
-      res.status(src.status).json({ success: false, data: null, error: src.error });
-      return;
+    const id = typeof body?.id === 'string' ? body.id : '';
+    let item: TaskItem;
+    if (kind === 'commit') {
+      // プロジェクト全体の操作。タスクには紐づかない（id は見ない）
+      item = { id: '', text: 'プロジェクト全体の変更', kind, prompt: buildCommitPrompt(), at: Date.now() };
+    } else {
+      if (!id) {
+        res.status(400).json({ success: false, data: null, error: 'id が不正です' });
+        return;
+      }
+      const src = readTodoSource();
+      if (!src.ok) {
+        res.status(src.status).json({ success: false, data: null, error: src.error });
+        return;
+      }
+      const tree = parseTodo(src.raw, { mdPath: 'TODO.md' });
+      const ctx = findTaskById(tree, id);
+      const builders: Record<Exclude<TaskKind, 'commit'>, (t: typeof tree, i: string) => string | null> = {
+        run: buildPrompt, explain: buildExplainPrompt, plan: buildPlanPrompt,
+      };
+      const prompt = builders[kind](tree, id);
+      if (!ctx || prompt === null) {
+        res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
+        return;
+      }
+      item = { id, text: ctx.node.text, kind, prompt, at: Date.now() };
     }
-    const tree = parseTodo(src.raw, { mdPath: 'TODO.md' });
-    const ctx = findTaskById(tree, id);
-    const builders: Record<TaskKind, (t: typeof tree, i: string) => string | null> = {
-      run: buildPrompt, explain: buildExplainPrompt, plan: buildPlanPrompt, commit: buildCommitPrompt,
-    };
-    const prompt = builders[kind](tree, id);
-    if (!ctx || prompt === null) {
-      res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
-      return;
-    }
-    const item: TaskItem = { id, text: ctx.node.text, kind, prompt, at: Date.now() };
     const windowId =
       typeof body?.windowId === 'string' && body.windowId ? sanitizeWindowName(body.windowId) : '';
     if (windowId) {

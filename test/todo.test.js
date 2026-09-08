@@ -291,17 +291,14 @@ test('プラン作成の prompt はプランと TODO.md のリンク・子タス
   assert.equal(buildPlanPrompt(tree, 'deadbeef'), null);
 });
 
-test('commit & push の prompt は status / diff の確認、DONE.md の整理、秘密の除外、push まで求める', () => {
-  const tree = parseTodo(TASK_SAMPLE);
-  const child = byText(tree, '子のタスク');
-  const prompt = buildCommitPrompt(tree, child.id);
-  assert.match(prompt, /コミットして push してください/);
-  assert.match(prompt, /- \[ \] 子のタスク/);
+test('commit & push の prompt はタスクに紐づかず、status / diff の確認、DONE.md の整理、秘密の除外、push まで求める', () => {
+  const prompt = buildCommitPrompt();
+  assert.match(prompt, /作業ツリーの変更をコミットして push してください/);
+  assert.doesNotMatch(prompt, /対象のタスク/);
   assert.match(prompt, /git status/);
   assert.match(prompt, /DONE\.md へ移して/);
   assert.match(prompt, /秘密/);
   assert.match(prompt, /CLAUDE\.md/);
-  assert.equal(buildCommitPrompt(tree, 'deadbeef'), null);
 });
 
 test('findTaskById は親の文面の列を返す', () => {
