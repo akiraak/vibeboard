@@ -557,6 +557,24 @@ export function buildPlanPrompt(tree: TodoTree, id: string): string | null {
   return parts.join('\n');
 }
 
+/**
+ * 「commit & push」の prompt。このタスクのぶんの変更をコミットして push させる。
+ * vibeboard 自身は git を叩かない（メッセージ・TODO.md の整理・秘密の除外は、セッションの判断と承認の中でやらせる）。
+ */
+export function buildCommitPrompt(tree: TodoTree, id: string): string | null {
+  const ctx = findTaskById(tree, id);
+  if (!ctx) return null;
+  const parts = taskBody(ctx, 'このプロジェクトの作業ツリーの変更（主に次のタスクのぶん）をコミットして push してください。');
+  parts.push('やること:');
+  parts.push('1. `git status` と `git diff` で変更を確かめる。このタスクに関係ない変更が混ざっていれば、分けるか残すかを判断して、その理由を書き残す');
+  parts.push('2. TODO.md を確認し、済んだタスクがあれば DONE.md へ移してからコミットに含める');
+  parts.push('3. 変更内容から要点をまとめたコミットメッセージを書き、コミットして push する');
+  parts.push('4. 秘密（.env・資格情報・トークン）や管理外にすべきファイルは含めない');
+  parts.push('');
+  parts.push('ブランチや push 先の決まりがこのプロジェクトの CLAUDE.md にあれば、それに従ってください。');
+  return parts.join('\n');
+}
+
 function leadWidth(line: string): number {
   return indentWidth((line.match(/^\s*/) as RegExpMatchArray)[0]);
 }

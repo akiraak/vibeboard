@@ -31,9 +31,10 @@
   - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Files タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
 - **Tasks タブで `TODO.md` のタスクを選び、このプロジェクトで動いている Claude Code のセッションへ渡して実行**
-  - ボタンは 4 つ。`実行`（こなして DONE.md へ移す）/ `プラン作成`（`docs/plans/` のプランファイルと TODO.md へのリンク・
+  - ボタンは 5 つ。`実行`（こなして DONE.md へ移す）/ `プラン作成`（`docs/plans/` のプランファイルと TODO.md へのリンク・
     子タスクだけを作らせ、実装には入らせない）/ `説明`（変更させず意図・進め方・影響を説明させる）/
-    `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
+    `commit & push`（そのタスクのぶんの変更をコミットして push させる。`git status` / `diff` の確認、DONE.md の整理、
+    秘密の除外はセッションの判断と承認の中で）/ `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
   - 左の一覧は**折り畳みツリー**。親だけ並べて `▸` で開く（開いた親 / 手で閉じた親は localStorage に覚え、選んだタスクの枝は自動で開く）。
     親は濃い字、子は縦線で束ね、文面は 1 行に切る（全文は title）。右の数字は子孫の 済 / 全部。`◐` 進行中、`－` 中止（打ち消し線）。済んだタスクは並べない
   - 送り先は **`claude agents --json` の一覧から選ぶ**（名前・実行中 / 待機中・登録済みかどうか）。人が待ち受けを起動しなくてよい
@@ -459,7 +460,7 @@ Tasks タブは、`TODO.md` のタスクから組んだ文面を **Claude Code �
 1. `vibeboard init` が `.claude/settings.json` に hook を書く（1 回だけ。コミットしてよい）
 2. そのプロジェクトで Claude Code を起動すると、hook がセッションの受信口を vibeboard に登録する（vibeboard が落ちていれば 1 秒で諦めて何もしない）。
    登録はメモリだけなので、vibeboard を後から起動した / 起動し直したセッションは未登録になる。そのぶんは Linux なら pid から受信口を引いて補う
-3. Tasks タブで送り先を選んで `実行` / `プラン作成` / `説明` を押すと、文面がキュー（`$TMPDIR/vibeboard-tasks-<root の hash>.json`）に積まれ、
+3. Tasks タブで送り先を選んで `実行` / `プラン作成` / `説明` / `commit & push` を押すと、文面がキュー（`$TMPDIR/vibeboard-tasks-<root の hash>.json`）に積まれ、
    登録済み（pid から引けたものを含む）ならその場で投函される。未登録なら「待ち」のまま、登録が来た時点で投函する（5 分で「失敗」）
 4. 受け取ったセッションでは、待機中なら新しいターンが始まり、実行中なら tool 呼び出しの合間に読まれる。
    届いた文面は他セッションからのものとして扱われ、承認の代わりにはならず、`/` コマンドも実行されない。承認はその画面で答える
@@ -495,8 +496,9 @@ node vibeboard/dist/cli.js --root .
 - `Files` タブでプロジェクト内のファイル（`TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` を含む）をプレビュー表示・編集できる。`TODO.md` はツリー表示つき
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
-- `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / プラン作成 / 説明 / 削除）。
+- `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / プラン作成 / 説明 / commit & push / 削除）。
   プラン作成は `docs/plans/` のプランファイルと `TODO.md` へのリンク・子タスクだけを作らせる（実装はしない）。
+  commit & push はそのタスクのぶんの変更をコミットして push させる（メッセージと `TODO.md` / `DONE.md` の整理はセッションが行う）。
   送り先は `claude agents` の一覧から選ぶ。セッションは起動時の hook（`vibeboard init` が `.claude/settings.json` に書く）で
   自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を投函する。登録が無くても Linux なら `claude agents` の pid から
   受信口（`$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`）を引いて投函する。hook が使えない環境では

@@ -231,7 +231,8 @@ export function postToInbox(socketPath: string, text: string, opts: PostOptions 
 // === キュー ===
 
 export type QueueState = 'waiting' | 'posted' | 'failed';
-export type TaskKind = 'run' | 'explain' | 'plan';
+export type TaskKind = 'run' | 'explain' | 'plan' | 'commit';
+export const TASK_KINDS: readonly TaskKind[] = ['run', 'explain', 'plan', 'commit'];
 
 export interface QueueItem {
   id: string;
@@ -375,7 +376,7 @@ export class TaskQueue {
       return parsed.items.filter(isQueueItem).map(i => ({
         ...i,
         text: typeof i.text === 'string' ? i.text : '',
-        kind: i.kind === 'explain' || i.kind === 'plan' ? i.kind : 'run',
+        kind: (TASK_KINDS as readonly string[]).includes(i.kind) ? (i.kind as TaskKind) : 'run',
         error: typeof i.error === 'string' ? i.error : null,
       }));
     } catch {

@@ -2583,7 +2583,7 @@ async function loadTaskTargets(sel, note) {
 }
 
 const QUEUE_STATE_LABEL = { waiting: '待ち', posted: '投函済み', failed: '失敗' };
-const QUEUE_KIND_LABEL = { run: '実行', explain: '説明', plan: 'プラン作成' };
+const QUEUE_KIND_LABEL = { run: '実行', explain: '説明', plan: 'プラン作成', commit: 'commit & push' };
 function fmtClock(ms) {
   const d = new Date(ms);
   const p = n => String(n).padStart(2, '0');
@@ -2685,16 +2685,18 @@ async function renderTaskView(id) {
   const btnRun = el('button', 'primary', '実行');
   const btnPlan = el('button', null, 'プラン作成');
   const btnExplain = el('button', null, '説明');
+  const btnCommit = el('button', null, 'commit & push');
   const btnDelete = el('button', 'danger', '削除');
-  for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.type = 'button';
-  rowBtn.append(btnRun, btnPlan, btnExplain, btnDelete);
+  for (const b of [btnRun, btnPlan, btnExplain, btnCommit, btnDelete]) b.type = 'button';
+  rowBtn.append(btnRun, btnPlan, btnExplain, btnCommit, btnDelete);
   pane.appendChild(rowBtn);
 
   const status = el('div', 'task-note', '');
   const hint = el('div', 'task-note',
-    '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
+    '実行・プラン作成・説明・commit & push は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
     + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
-    + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
+    + '説明は変更せず内容を説明するだけ。commit & push はこのタスクのぶんの変更をコミットして push させます（メッセージと TODO.md / DONE.md の整理はセッションが行う）。'
+    + '削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
     + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
   const queueBox = el('div', 'task-queue');
   queueBox.hidden = true;
@@ -2720,10 +2722,10 @@ async function renderTaskView(id) {
     refreshAll();
   }, 5000);
 
-  const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnDelete]) b.disabled = on; };
+  const setBusy = on => { for (const b of [btnRun, btnPlan, btnExplain, btnCommit, btnDelete]) b.disabled = on; };
   const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
-    const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : '渡し';
+    const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : kind === 'commit' ? 'commit & push を頼み' : '渡し';
     const target = parseTargetValue(sel.value);
     setBusy(true);
     status.textContent = '送っています...';
@@ -2761,6 +2763,7 @@ async function renderTaskView(id) {
   btnRun.addEventListener('click', () => send('run'));
   btnPlan.addEventListener('click', () => send('plan'));
   btnExplain.addEventListener('click', () => send('explain'));
+  btnCommit.addEventListener('click', () => send('commit'));
   btnDelete.addEventListener('click', async () => {
     if (!confirm('このタスクを TODO.md から削除します（DONE.md には移しません）。よろしいですか？')) return;
     setBusy(true);
