@@ -1385,12 +1385,39 @@ const READ_ONLY_REASONS = {
   symlink: 'シンボリックリンクのため編集できません',
 };
 
+// 画像はバイナリでも中身を見せる（/files で配信しているものをそのまま表示。Markdown 内の画像と同じ経路）
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+function isImagePath(p) {
+  return IMAGE_EXT_RE.test(String(p || ''));
+}
+function filesUrl(p) {
+  return '/files/' + String(p || '').split('/').map(encodeURIComponent).join('/');
+}
+function renderImagePreview(body, p) {
+  if (!isImagePath(p)) return false;
+  const box = document.createElement('div');
+  box.className = 'doc-image-box';
+  const img = document.createElement('img');
+  img.className = 'doc-image';
+  img.src = filesUrl(p);
+  img.alt = p;
+  const cap = document.createElement('div');
+  cap.className = 'doc-image-cap';
+  cap.textContent = p;
+  img.addEventListener('load', () => { cap.textContent = `${p} · ${img.naturalWidth} × ${img.naturalHeight}`; });
+  img.addEventListener('error', () => { cap.textContent = `${p} · 読み込めませんでした`; });
+  box.append(img, cap);
+  body.appendChild(box);
+  return true;
+}
+
 function renderDocEditBody() {
   const body = document.getElementById('todo-body');
   if (!body) return;
   body.innerHTML = '';
 
   if (docState.readOnly) {
+    if (docState.readOnlyReason === 'binary' && renderImagePreview(body, docState.path)) return;
     const note = document.createElement('div');
     note.className = 'empty-state';
     note.textContent = READ_ONLY_REASONS[docState.readOnlyReason] || '編集できないファイルです';
