@@ -1160,6 +1160,43 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   pointer-events: none;
 }
 
+/* Tasks タブの左ペイン: 折り畳みツリー。親は濃い字、子は縦線で束ねる。文面は 1 行に切る */
+.tasks-tree, .tasks-branch { list-style: none; margin: 0; padding: 0; }
+.tasks-branch { margin-left: 15px; border-left: 1px solid var(--border); padding-left: 6px; }
+.nav-item.tasks-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  word-break: normal;
+}
+.tasks-item.tasks-top { color: var(--text); font-weight: 600; }
+.tasks-item.tasks-has-active:not(.active) { color: var(--text); }
+.tasks-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tasks-chev, .tasks-st {
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--text-sub);
+  border-radius: 3px;
+}
+.tasks-chev { cursor: pointer; }
+.tasks-chev:hover { background: var(--hover); color: var(--text); }
+.tasks-chev:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tasks-chip {
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  color: var(--text-sub);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.tasks-item.active .tasks-chip { color: var(--accent); border-color: var(--accent); }
+.tasks-item.tasks-active .tasks-text, .tasks-item.tasks-active .tasks-st { color: #9a6700; }
+.tasks-item.tasks-cancelled .tasks-text { text-decoration: line-through; color: var(--text-sub); }
+
 /* Tasks タブ（TODO.md のタスクを待ち受けている Claude Code へ渡す） */
 .task-pane { max-width: 860px; }
 .task-title { font-size: 18px; line-height: 1.4; margin: 0 0 4px; }

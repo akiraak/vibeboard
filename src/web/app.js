@@ -1856,6 +1856,8 @@ function handleRoute() {
       return;
     }
     if (needSidebarRerender) renderSidebar();
+    // 閉じた枝の中のタスクへ飛んだ（関係チップなど）ときは描き直して枝を開く
+    else if (tasksState.tree && !sidebarNav.querySelector(`.tasks-item[data-path="${CSS.escape(filePath)}"]`)) paintTasksSidebar(tasksState);
     else refreshActiveHighlight();
     renderTaskView(filePath);
     return;
@@ -2334,57 +2336,152 @@ function renderTaskSubtree(node) {
   return lines.join('\n');
 }
 
-async function renderTasksSidebar() {
-  sidebarNav.innerHTML = '<div class="loading-text">読み込み中...</div>';
-  const state = await fetchTasksTree();
-  if (activeCategory !== TASKS_TAB) return;
+// 左ペインは折り畳みツリー。親だけ並べ、▸ で開く。開いた親 / 手で閉じた親を覚え、選択した枝は自動で開く。
+// 文面は 1 行に切り詰め（全文は title）、親は濃い字、子は縦線で束ねる。済んだタスクは並べない（実行するものではない）。
+const STORAGE_TASKS_TREE = 'vibeboard.tasksTree';
+const tasksTreeState = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_TASKS_TREE) || 'null');
+    return { expanded: new Set((raw && raw.expanded) || []), collapsed: new Set((raw && raw.collapsed) || []), lastSelected: null };
+  } catch {
+    return { expanded: new Set(), collapsed: new Set(), lastSelected: null };
+  }
+})();
+function saveTasksTreeState() {
+  try {
+    localStorage.setItem(STORAGE_TASKS_TREE, JSON.stringify({
+      expanded: [...tasksTreeState.expanded], collapsed: [...tasksTreeState.collapsed],
+    }));
+  } catch {
+    // 保存できなくても動く
+  }
+}
+// 済んだタスクは出さない。ただし済んでいない子孫を持つ親は、子を辿る足場として残す
+const taskVisible = n => n.state !== 'done' || n.total - n.done > 0;
+const taskGlyph = n => (n.state === 'active' ? '◐' : n.state === 'cancelled' ? '－' : n.state === 'done' ? '✓' : '○');
+function taskAncestorIds(tree, id) {
+  const walk = (nodes, trail) => {
+    for (const n of nodes) {
+      if (n.id === id) return trail;
+      const found = walk(n.children, [...trail, n.id]);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const s of (tree && tree.sections) || []) {
+    const found = walk(s.tasks, []);
+    if (found) return found;
+  }
+  return [];
+}
+function toggleTaskFold(id, expandedNow) {
+  if (expandedNow) {
+    tasksTreeState.expanded.delete(id);
+    tasksTreeState.collapsed.add(id);
+  } else {
+    tasksTreeState.expanded.add(id);
+    tasksTreeState.collapsed.delete(id);
+  }
+  saveTasksTreeState();
+  paintTasksSidebar(tasksState);
+}
+function paintTasksSidebar(state) {
   sidebarNav.innerHTML = '';
   if (state.error) {
     const el = document.createElement('div');
     el.className = 'error-text';
     el.textContent = state.error;
     sidebarNav.appendChild(el);
-    return;
+    return null;
   }
-  // 済んだタスクは並べない（実行するものではない）
   const entries = flattenTasks(state.tree).filter(e => e.node.state !== 'done');
   if (entries.length === 0) {
     const el = document.createElement('div');
     el.className = 'loading-text';
     el.textContent = 'タスク（- [ ] の行）がありません';
     sidebarNav.appendChild(el);
-    return;
+    return null;
   }
+  const parsed = parseHash();
+  const selectedId = parsed && parsed.category === TASKS_TAB ? parsed.filePath : null;
+  const ancestors = new Set(selectedId ? taskAncestorIds(state.tree, selectedId) : []);
+  // 選択が変わったときだけ、その枝を開く（同じ選択のまま手で閉じたものは閉じたままにする）
+  if (selectedId !== tasksTreeState.lastSelected) {
+    for (const id of ancestors) tasksTreeState.collapsed.delete(id);
+    tasksTreeState.lastSelected = selectedId;
+  }
+  const isExpanded = id => (tasksTreeState.expanded.has(id) || ancestors.has(id)) && !tasksTreeState.collapsed.has(id);
+
+  const renderList = (nodes, depth) => {
+    const ul = document.createElement('ul');
+    ul.className = depth === 0 ? 'tasks-tree' : 'tasks-branch';
+    for (const node of nodes) {
+      if (!taskVisible(node)) continue;
+      const kids = node.children.filter(taskVisible);
+      const expanded = kids.length > 0 && isExpanded(node.id);
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.className = 'nav-item tasks-item'
+        + (depth === 0 ? ' tasks-top' : '')
+        + (node.state === 'active' ? ' tasks-active' : node.state === 'cancelled' ? ' tasks-cancelled' : '')
+        + (ancestors.has(node.id) ? ' tasks-has-active' : '');
+      a.href = `#${TASKS_TAB}/${encodeURIComponent(node.id)}`;
+      a.dataset.category = TASKS_TAB;
+      a.dataset.path = node.id;
+      a.title = node.text;
+      const lead = document.createElement('span');
+      if (kids.length > 0) {
+        lead.className = 'tasks-chev';
+        lead.textContent = expanded ? '▾' : '▸';
+        lead.title = expanded ? '閉じる' : '開く';
+        lead.setAttribute('role', 'button');
+        lead.tabIndex = 0;
+        const toggle = e => { e.preventDefault(); e.stopPropagation(); toggleTaskFold(node.id, expanded); };
+        lead.addEventListener('click', toggle);
+        lead.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') toggle(e); });
+      } else {
+        lead.className = 'tasks-st';
+        lead.textContent = taskGlyph(node);
+      }
+      const text = document.createElement('span');
+      text.className = 'tasks-text';
+      text.textContent = (kids.length > 0 ? `${taskGlyph(node)} ` : '') + node.text;
+      a.append(lead, text);
+      if (kids.length > 0) {
+        const chip = document.createElement('span');
+        chip.className = 'tasks-chip';
+        chip.textContent = `${node.done}/${node.total}`;
+        chip.title = `子孫 ${node.total} 件のうち ${node.done} 件が済み`;
+        a.appendChild(chip);
+      }
+      li.appendChild(a);
+      if (expanded) li.appendChild(renderList(kids, depth + 1));
+      ul.appendChild(li);
+    }
+    return ul;
+  };
+
   const frag = document.createDocumentFragment();
-  let lastGroup = null;
-  for (const { node } of entries) {
-    const group = node.heading || null;
-    if (group && group !== lastGroup) {
+  for (const s of state.tree.sections) {
+    if (!s.tasks.some(taskVisible)) continue;
+    if (s.heading) {
       const h = document.createElement('div');
       h.className = 'nav-group-header';
-      h.textContent = group;
+      h.textContent = s.heading;
       frag.appendChild(h);
-      lastGroup = group;
     }
-    const a = document.createElement('a');
-    a.className = 'nav-item';
-    a.href = `#${TASKS_TAB}/${encodeURIComponent(node.id)}`;
-    a.dataset.category = TASKS_TAB;
-    a.dataset.path = node.id;
-    const title = document.createElement('div');
-    title.textContent = `${'　'.repeat(node.depth)}${node.depth > 0 ? '↳ ' : ''}${node.text}`;
-    a.appendChild(title);
-    if (node.state === 'active') {
-      const b = document.createElement('span');
-      b.className = 'nav-item-badge';
-      b.textContent = '●';
-      b.title = '進行中';
-      a.appendChild(b);
-    }
-    frag.appendChild(a);
+    frag.appendChild(renderList(s.tasks, 0));
   }
   sidebarNav.appendChild(frag);
   refreshActiveHighlight();
+  return entries;
+}
+async function renderTasksSidebar() {
+  sidebarNav.innerHTML = '<div class="loading-text">読み込み中...</div>';
+  const state = await fetchTasksTree();
+  if (activeCategory !== TASKS_TAB) return;
+  const entries = paintTasksSidebar(state);
+  if (!entries) return;
 
   // 未選択なら先頭のタスクへ（customTab と同じ振る舞い。空ペインを見せない）
   const parsed = parseHash();
