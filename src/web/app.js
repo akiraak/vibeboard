@@ -2317,10 +2317,13 @@ function refreshSidebarConflictBadge() {
 // 詳細 = 部分木・送り先（セッション / listen）・実行 / 説明 / 削除・投函の状態。
 // 実行・説明は POST /api/tasks/run。送り先がセッションならサーバがその受信口へ投函し（キューに積む）、
 // listen なら待ち受け（inbox）へ渡す。削除は POST /api/tasks/delete で、サーバが TODO.md から部分木の行だけを外す。
-// **文面はサーバが組む**。ここから送るのは id と決め打ちの値だけ。
+// **文面はサーバが組む**。ここから送るのは id と決め打ちの種別、それに「追加の指示」の本文だけ。
 
 const TASKS_TODO_PATH = 'TODO.md';
 const tasksState = { tree: null, error: null };
+// 「追加の指示」の打ちかけ。TODO.md が外で変わると画面を描き直すので、タスクの id ごとに覚えて戻す
+const TASK_NOTE_MAX = 4000;
+const taskNoteDrafts = new Map();
 
 async function fetchTasksTree() {
   try {
@@ -2754,6 +2757,29 @@ async function renderTaskView(id) {
   note.hidden = true;
   pane.appendChild(note);
 
+  // 「追加の指示」。空欄なら今までと同じ文面が届く（サーバが note を見ない）
+  const rowNote = el('div', 'task-compose');
+  const noteLbl = el('label', null, '追加の指示（任意）');
+  noteLbl.htmlFor = 'task-note-input';
+  const noteBox = el('textarea', 'task-compose-input');
+  noteBox.id = 'task-note-input';
+  noteBox.rows = 3;
+  noteBox.maxLength = TASK_NOTE_MAX;
+  noteBox.placeholder = '例: Phase 6 だけやって。テストは走らせなくていい\n（空欄なら今までどおりの文面で送ります。Ctrl+Enter で実行）';
+  noteBox.value = taskNoteDrafts.get(id) || '';
+  noteBox.addEventListener('input', () => {
+    if (noteBox.value.trim()) taskNoteDrafts.set(id, noteBox.value);
+    else taskNoteDrafts.delete(id);
+  });
+  noteBox.addEventListener('keydown', ev => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+      ev.preventDefault();
+      send('run');
+    }
+  });
+  rowNote.append(noteLbl, noteBox);
+  pane.appendChild(rowNote);
+
   const rowBtn = el('div', 'task-row');
   const btnRun = el('button', 'primary', '実行');
   const btnPlan = el('button', null, 'プラン作成');
@@ -2768,6 +2794,7 @@ async function renderTaskView(id) {
     '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
     + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
     + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
+    + '「追加の指示」に書いた文面は、実行・プラン作成・説明の文面の末尾に足して送ります（空欄なら今までどおり）。削除には効きません。'
     + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
   const queueBox = el('div', 'task-queue');
   queueBox.hidden = true;
@@ -2797,18 +2824,21 @@ async function renderTaskView(id) {
   const nameOf = sessionId => (targetsById.get(sessionId) || {}).name || String(sessionId || '').slice(0, 8);
   const send = async kind => {
     const verb = kind === 'explain' ? '説明を頼み' : kind === 'plan' ? 'プラン作成を頼み' : kind === 'commit' ? 'commit & push を頼み' : '渡し';
+    const note = noteBox.value.trim();
+    const noted = note ? '追加の指示つきで' : '';
     const target = parseTargetValue(sel.value);
     setBusy(true);
     status.textContent = '送っています...';
     try {
       const body = { id, kind };
+      if (note) body.note = note;
       if (target && target.kind === 'listen') body.windowId = target.id;
       else if (target && target.kind === 'session') body.sessionId = target.id;
       const data = await postTasks('/api/tasks/run', body);
       if (data.item) {
         const name = nameOf(data.item.sessionId);
         if (data.item.state === 'posted') {
-          status.textContent = `「${name}」へ${verb}ました。そのセッションの画面を見てください。`;
+          status.textContent = `「${name}」へ${noted}${verb}ました。そのセッションの画面を見てください。`;
         } else if (data.item.state === 'waiting') {
           status.textContent = `「${name}」は未登録なので待ちに積みました。そのセッションを起動し直す（hook が登録する）と届きます。5 分で失敗にします。`;
         } else {
@@ -2816,7 +2846,7 @@ async function renderTaskView(id) {
         }
       } else if (data.routedTo) {
         status.textContent = data.connected
-          ? `「${data.routedTo}」へ${verb}ました。その画面を見てください。`
+          ? `「${data.routedTo}」へ${noted}${verb}ました。その画面を見てください。`
           : `「${data.routedTo}」あてに送りました。今つながっていないので、その画面がつながったら届きます。`;
       } else if (Array.isArray(data.targets) && data.targets.length > 1) {
         status.textContent = '送り先を選んでからにしてください。';

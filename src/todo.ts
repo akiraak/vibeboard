@@ -575,6 +575,43 @@ export function buildCommitPrompt(): string {
   ].join('\n');
 }
 
+/** 「追加の指示」の上限。これより長ければサーバが断る（画面側も maxlength で止める） */
+export const NOTE_MAX = 4000;
+
+/**
+ * 画面から来た「追加の指示」を丸める。改行とタブは残し、他の制御文字は落として前後の空白を削る。
+ * **文面を組むのはサーバのまま**で、ここを通ったものだけが prompt の末尾に入る（`appendNote`）。
+ */
+export function sanitizeNote(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .split('')
+    .filter(c => {
+      const k = c.charCodeAt(0);
+      return c === '\n' || c === '\t' || (k >= 0x20 && k !== 0x7f);
+    })
+    .join('')
+    .trim();
+}
+
+/**
+ * prompt の末尾に「追加の指示」を足す。空なら**今までと同じ文面のまま**返す。
+ * 実行の文面は「終わったら DONE.md へ」で終わるので、食い違ったときにどちらを採るかも書いておく。
+ */
+export function appendNote(prompt: string, note: string): string {
+  const body = sanitizeNote(note);
+  if (!body) return prompt;
+  return [
+    prompt,
+    '',
+    '追加の指示:',
+    body,
+    '',
+    'この追加の指示が上の内容と食い違うときは、追加の指示を優先してください。',
+  ].join('\n');
+}
+
 function leadWidth(line: string): number {
   return indentWidth((line.match(/^\s*/) as RegExpMatchArray)[0]);
 }

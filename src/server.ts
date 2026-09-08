@@ -19,7 +19,18 @@ import {
   listClaudeSessions,
   postToInbox,
 } from './tasks';
-import { buildCommitPrompt, buildExplainPrompt, buildPlanPrompt, buildPrompt, findTaskById, parseTodo, removeTask } from './todo';
+import {
+  NOTE_MAX,
+  appendNote,
+  buildCommitPrompt,
+  buildExplainPrompt,
+  buildPlanPrompt,
+  buildPrompt,
+  findTaskById,
+  parseTodo,
+  removeTask,
+  sanitizeNote,
+} from './todo';
 import {
   MAX_SOURCE_BYTES,
   applyEol,
@@ -760,7 +771,8 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   //      登録してきた受信口ソケットへ vibeboard が直接投函する（src/tasks.ts）。人が待ち受けを起動する必要は無い
   //   2. **listen**（互換・逃げ道）: `vibeboard listen --name <名前>` が `/api/tasks/inbox` を購読し、
   //      届いた文面をその画面の Claude Code が実行する
-  // **文面はここで TODO.md から組む**（クライアントからは id と決め打ちの値しか受けない）。
+  // **文面はここで TODO.md から組む**（クライアントからは id と決め打ちの種別しか受けない）。
+  // 例外は画面の「追加の指示」だけで、丸めた（制御文字を落とし、長さを絞った）ものを組んだ文面の末尾に足す。
   // セッションあての文面はキュー（tmp の JSON）に積み、送り先が登録済みなら即投函、未登録なら登録が来た時点で投函する。
   // listen あては名前で配り、不在なら名前あてに溜めて、同じ名前で繋ぎ直したときに渡す。
   type TaskItem = { id: string; text: string; kind: TaskKind; prompt: string; at: number };
@@ -1065,9 +1077,17 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
   });
 
   app.post('/api/tasks/run', wrap(async (req, res) => {
-    const body = req.body as { id?: unknown; windowId?: unknown; sessionId?: unknown; kind?: unknown } | undefined;
+    const body = req.body as
+      | { id?: unknown; windowId?: unknown; sessionId?: unknown; kind?: unknown; note?: unknown }
+      | undefined;
     const kind: TaskKind = (TASK_KINDS as readonly unknown[]).includes(body?.kind) ? (body?.kind as TaskKind) : 'run';
     const id = typeof body?.id === 'string' ? body.id : '';
+    // 画面の「追加の指示」。空なら今までと同じ文面のまま
+    const note = sanitizeNote(body?.note);
+    if (note.length > NOTE_MAX) {
+      res.status(400).json({ success: false, data: null, error: `追加の指示が長すぎます（${NOTE_MAX} 文字まで）` });
+      return;
+    }
     let item: TaskItem;
     if (kind === 'commit') {
       // プロジェクト全体の操作。タスクには紐づかない（id は見ない）
@@ -1092,7 +1112,7 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
         res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
         return;
       }
-      item = { id, text: ctx.node.text, kind, prompt, at: Date.now() };
+      item = { id, text: ctx.node.text, kind, prompt: appendNote(prompt, note), at: Date.now() };
     }
     const windowId =
       typeof body?.windowId === 'string' && body.windowId ? sanitizeWindowName(body.windowId) : '';

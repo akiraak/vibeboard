@@ -5,6 +5,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const {
+  appendNote,
   buildCommitPrompt,
   buildExplainPrompt,
   buildPlanPrompt,
@@ -16,6 +17,7 @@ const {
   parseTodo,
   removeTask,
   resolveDocPath,
+  sanitizeNote,
 } = require('../dist/todo.js');
 
 const SAMPLE = [
@@ -299,6 +301,36 @@ test('commit & push の prompt はタスクに紐づかず、status / diff の�
   assert.match(prompt, /DONE\.md へ移して/);
   assert.match(prompt, /秘密/);
   assert.match(prompt, /CLAUDE\.md/);
+});
+
+test('追加の指示は文面の末尾に付き、食い違ったときの優先も書かれる', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const base = buildPrompt(tree, child.id);
+  const prompt = appendNote(base, 'Phase 6 だけやって');
+  assert.ok(prompt.startsWith(base));
+  assert.match(prompt, /追加の指示:\nPhase 6 だけやって/);
+  assert.match(prompt, /追加の指示を優先してください/);
+  // プラン作成・説明にも同じように付く
+  assert.match(appendNote(buildPlanPrompt(tree, child.id), 'A'), /追加の指示:\nA/);
+  assert.match(appendNote(buildExplainPrompt(tree, child.id), 'A'), /追加の指示:\nA/);
+});
+
+test('追加の指示が空なら今までと同じ文面のまま', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const base = buildPrompt(tree, child.id);
+  for (const empty of ['', '   ', '\n\t ', undefined, null, 42, {}]) {
+    assert.equal(appendNote(base, empty), base);
+  }
+});
+
+test('追加の指示は改行とタブを残し、他の制御文字を落として前後を削る', () => {
+  assert.equal(sanitizeNote('  1 行目\n\t2 行目  '), '1 行目\n\t2 行目');
+  assert.equal(sanitizeNote('a\u0000b\u0007c\u007f'), 'abc');
+  assert.equal(sanitizeNote('a\r\nb\rc'), 'a\nb\nc');
+  assert.equal(sanitizeNote(undefined), '');
+  assert.equal(sanitizeNote(123), '');
 });
 
 test('findTaskById は親の文面の列を返す', () => {

@@ -1233,6 +1233,21 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .task-row button.danger { color: #b42318; border-color: #f0c2bd; }
 .task-row button:disabled { opacity: 0.5; cursor: default; }
 .task-note { color: var(--text-mute); font-size: 12px; margin-top: 12px; }
+/* 「追加の指示」（実行ボタンの上）。空欄なら今までと同じ文面が届く */
+.task-compose { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.task-compose label { color: var(--text-mute); font-size: 13px; }
+.task-compose-input {
+  font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 62px;
+}
+.task-compose-input::placeholder { color: var(--text-mute); }
+.task-compose-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 
 /* TODO ツリー（Root タブの「ツリー」サブタブ） */
 .todo-tree {
