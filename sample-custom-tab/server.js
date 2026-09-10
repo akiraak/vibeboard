@@ -58,7 +58,8 @@ const server = http.createServer((req, res) => {
     const id = url.searchParams.get('item') || '';
     res.writeHead(200, corsHeaders({
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "frame-ancestors http://127.0.0.1:*",
+      // vibeboard が /ext/<name> で中継するので iframe は同一オリジンになる
+      'Content-Security-Policy': "frame-ancestors 'self'",
     }));
     res.end(viewHtml(id));
     return;

@@ -329,8 +329,9 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
   },
 
   // 外部 HTTP プラグインを iframe タブとして差し込む（省略時は無し）。
-  // 各エントリは別プロセスのプラグインを指し、vibeboard は中身をプロキシせず
-  // baseUrl をクライアントへ渡してブラウザが直接 fetch する（loopback / CORS 前提）。
+  // 各エントリは別プロセスのプラグインを指す。vibeboard 本体が同一オリジンの
+  // `/ext/<name>/...` で受けて baseUrl へ中継するので、ブラウザは baseUrl に直接つながない
+  // （リモートから vibeboard を見てもタブが動く）。
   // 契約は後述の「customTabs（プラグインタブ）」を参照。topbar では他タブの左側に並ぶ。
   "customTabs": [
     {
@@ -377,8 +378,12 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
 ## customTabs（プラグインタブ）
 
 `customTabs` を設定すると、外部の HTTP プラグインを vibeboard の iframe タブとして差し込める。
-vibeboard はプラグインの中身をプロキシせず、`baseUrl` をクライアントへ渡してブラウザが直接
-fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-custom-tab/`](sample-custom-tab/) を参照。
+vibeboard 本体が `/ext/<name>/...` で受けて `baseUrl` へ中継し（SSE も素通し）、ブラウザには
+`baseUrl` を配らない。同一オリジンになるので CORS は不要で、`ssh -L` や tailscale serve 越しに
+vibeboard を見てもタブがそのまま動く。サンプル実装は [`sample-custom-tab/`](sample-custom-tab/) を参照。
+
+⚠ 中継後の接続はプラグインからはループバック発に見える。**接続元 IP で権限を分けるサーバを
+`baseUrl` に指定しない**こと（リモートの閲覧者にローカル向けの面が開く）。
 
 ### プラグインが実装する 3 エンドポイント
 
@@ -391,8 +396,8 @@ fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-
 プラグインのプロセスは `customTabs[].command` を書いておけば vibeboard が一緒に起こす
 （下記「プラグインを一緒に起動する」）。
 
-すべて CORS を許可すること（`Access-Control-Allow-Origin`）。`/view` の HTML は iframe 埋め込みのため
-`Content-Security-Policy: frame-ancestors http://127.0.0.1:*`（または vibeboard のオリジン）を返す。
+中継で同一オリジンになるため CORS の許可は不要（付いていても害はない）。`/view` の HTML は
+iframe 埋め込みのため、CSP を返すなら `Content-Security-Policy: frame-ancestors 'self'` にする。
 
 ### サイドバー項目スキーマ（`/api/sidebar` の `items[]`）
 
@@ -416,8 +421,8 @@ fetch / SSE する（loopback + CORS 前提）。サンプル実装は [`sample-
 
 ### プラグインを一緒に起動する（`command`）
 
-customTab の中身はブラウザが `baseUrl` へ直接つなぐ別プロセスなので、それが起動して
-いないとタブは「接続できません: Failed to fetch」で終わる。起動を人の手に任せると
+customTab の中身は `baseUrl` で待つ別プロセスなので、それが起動して
+いないとタブは「接続できません」で終わる。起動を人の手に任せると
 **本体は動いているのにタブだけ死んでいる**が普通に起きるので、タブの宣言と同じ場所に
 起動コマンドを書ける。
 

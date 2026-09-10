@@ -3,8 +3,8 @@ import type { CustomTabConfig, VibeboardConfig } from './config';
 
 // customTab の中身を出すプロセス（サイドカー）を、vibeboard と一緒に起こして一緒に止める。
 //
-// customTab はブラウザが baseUrl へ直接つなぐ作りなので、その先のプロセスが
-// 起動していないとタブは「接続できません」で終わる。起動を人の手に任せると
+// customTab の中身は baseUrl で待つ別プロセス（本体が /ext/<name> で中継する）なので、
+// それが起動していないとタブは「接続できません」で終わる。起動を人の手に任せると
 // 「本体は動いているのにタブだけ死んでいる」が普通に起きるため、
 // **タブの宣言と同じ場所（vibeboard.config.json）に起動コマンドを書けるようにする**。
 //

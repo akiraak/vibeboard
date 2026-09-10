@@ -17,7 +17,8 @@ const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categorie
       { name: 'specs', label: 'Specs', archive: false },
     ];
 const CATEGORY_BY_NAME = new Map(CATEGORY_DEFS.map(c => [c.name, c]));
-// customTabs はサーバ側で正規化済み（name/label/baseUrl）。未指定なら空配列。
+// customTabs はサーバ側で正規化済み（name/label/base）。base は同一オリジンの
+// `/ext/<name>`（サーバがプラグインの baseUrl へ中継する）。未指定なら空配列。
 const CUSTOM_TABS = Array.isArray(VB_CONFIG.customTabs) ? VB_CONFIG.customTabs : [];
 const CUSTOM_TAB_BY_NAME = new Map(CUSTOM_TABS.map(t => [t.name, t]));
 const FILES_LABEL = (VB_CONFIG.files && VB_CONFIG.files.label) || 'Files';
@@ -2888,7 +2889,7 @@ async function fetchCustomTabSidebar(name) {
   const tab = CUSTOM_TAB_BY_NAME.get(name);
   if (!tab) return { items: [], error: 'unknown tab' };
   try {
-    const res = await fetch(`${tab.baseUrl}/api/sidebar`, { cache: 'no-store' });
+    const res = await fetch(`${tab.base}/api/sidebar`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     const items = Array.isArray(json && json.items) ? json.items : [];
@@ -2979,7 +2980,7 @@ async function renderCustomTabSidebar(name) {
 
 function buildCustomTabSrc(tab, itemId, bust) {
   const t = bust ? `&_t=${Date.now()}` : '';
-  return `${tab.baseUrl}/view?item=${encodeURIComponent(itemId)}${t}`;
+  return `${tab.base}/view?item=${encodeURIComponent(itemId)}${t}`;
 }
 
 function renderCustomTabView(name, itemId) {
@@ -3029,7 +3030,7 @@ function ensureCustomTabSource(name) {
   if (!tab || typeof EventSource === 'undefined') return;
   let es;
   try {
-    es = new EventSource(`${tab.baseUrl}/api/watch`);
+    es = new EventSource(`${tab.base}/api/watch`);
   } catch {
     return;
   }

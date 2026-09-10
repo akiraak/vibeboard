@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, VibeboardConfig } from './config';
+import { proxyToTab } from './ext';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
 import { startSidecars, stopSidecars } from './sidecar';
 import { isOurHook } from './init';
@@ -279,6 +280,25 @@ function isInsideRoot(child: string, root: string): boolean {
 
 export async function startServer(config: VibeboardConfig): Promise<void> {
   const app = express();
+
+  // customTab の中継（/ext/<name>/... → その customTab の baseUrl）。
+  // ⚠ **express.json() より前に置く**（POST の body をパースせず素のまま流すため）。
+  // 中継先は設定済みタブの baseUrl だけで、任意 URL への open proxy にはならない。
+  const customTabByName = new Map<string, CustomTabConfig>(
+    config.customTabs.map(t => [t.name, t])
+  );
+  app.all(['/ext/:name', '/ext/:name/*'], (req: Request, res: Response) => {
+    const nameParam = req.params.name;
+    const tab = customTabByName.get(typeof nameParam === 'string' ? nameParam : '');
+    if (!tab) {
+      res.status(404).type('text').send('unknown customTab');
+      return;
+    }
+    // クエリを含む生の残りパス。originalUrl は必ず /ext/<name> で始まる
+    const suffix = req.originalUrl.slice(`/ext/${tab.name}`.length);
+    proxyToTab(tab, suffix, req, res);
+  });
+
   // ファイル本文をまるごと JSON で往復させるため、MAX_SOURCE_BYTES (1MB) の中身が
   // エスケープで膨らんでも収まるだけの余裕を取る。実際の上限は source.ts 側で掛ける。
   app.use(express.json({ limit: '8mb' }));
@@ -1227,14 +1247,14 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
     path: toRootRel(c.path, config.root),
   }));
   const clientFiles = { label: config.files.label };
-  // customTabs は baseUrl ごとクライアントへ流す（クライアントが直接 fetch するため）。
-  // baseUrl はループバック前提なので秘匿対象ではない。
+  // customTabs はブラウザに baseUrl を配らず、同一オリジンの `/ext/<name>` を配る
+  // （本体が baseUrl へ中継する。リモート閲覧でもタブが動き、CORS も要らない）。
   // **command は渡さない**（起動はサーバ側の話で、ブラウザに配る理由が無い）。
-  const clientCustomTabs: Pick<CustomTabConfig, 'name' | 'label' | 'baseUrl'>[] =
+  const clientCustomTabs: { name: string; label: string; base: string }[] =
     config.customTabs.map(t => ({
       name: t.name,
       label: t.label,
-      baseUrl: t.baseUrl,
+      base: `/ext/${t.name}`,
     }));
   const renderIndexHtml = (): string => {
     const clientConfig = JSON.stringify({
