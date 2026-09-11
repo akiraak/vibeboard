@@ -1598,6 +1598,27 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 }
 .task-add-line button:hover { background: var(--hover); }
 .task-add-line button:disabled { opacity: 0.5; cursor: default; }
+/* 詳細ペインの説明: 常時見えるのは 1 行 ＋「?」。全文はトグルで開いたときだけ */
+.task-hint { display: flex; align-items: center; gap: 6px; }
+.task-hint-toggle {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-mute);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.task-hint-toggle:hover { background: var(--hover); color: var(--text); }
+.task-hint-full {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+}
 .task-queue-state.running { color: #0550ae; border-color: #b6d5f5; background: #ddf4ff; }
 .modal-add-input { width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 6px; }
 .modal-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }

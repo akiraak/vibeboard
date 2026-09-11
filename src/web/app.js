@@ -2982,6 +2982,7 @@ async function renderTaskView(id) {
   noteLbl.htmlFor = 'task-note-input';
   const noteBox = el('textarea', 'task-compose-input');
   noteBox.id = 'task-note-input';
+  noteBox.title = '書いた文面は実行・プラン作成・説明の文面の末尾に足して送る（空欄なら今までどおり）。削除・子タスク追加には効かない';
   noteBox.rows = 3;
   noteBox.maxLength = TASK_NOTE_MAX;
   noteBox.placeholder = '例: Phase 6 だけやって。テストは走らせなくていい\n（空欄なら今までどおりの文面で送ります。Ctrl+Enter で実行）';
@@ -3001,10 +3002,14 @@ async function renderTaskView(id) {
 
   const rowBtn = el('div', 'task-row');
   const btnRun = el('button', 'primary', '実行');
+  btnRun.title = 'このタスクを送り先のセッションへ投函して実行させる（会話も承認もそのセッションの画面で進む）';
   const btnPlan = el('button', null, 'プラン作成');
+  btnPlan.title = 'docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせる（実装はしない）';
   const btnExplain = el('button', null, '説明');
+  btnExplain.title = '何も変更せず、このタスクの意図・進め方・影響を説明させる';
   const btnAddChild = el('button', null, '子タスク追加');
   const btnDelete = el('button', 'danger', '削除');
+  btnDelete.title = 'TODO.md からこのタスクを消す（DONE.md には移さない）';
   for (const b of [btnRun, btnPlan, btnExplain, btnAddChild, btnDelete]) b.type = 'button';
   rowBtn.append(btnRun, btnPlan, btnExplain, btnAddChild, btnDelete);
   pane.appendChild(rowBtn);
@@ -3015,18 +3020,33 @@ async function renderTaskView(id) {
   btnAddChild.hidden = addTaskAvailable === false;
 
   const status = el('div', 'task-note', '');
-  const hint = el('div', 'task-note',
+  // 説明は 3 か所に分ける: 常時見えるのは 1 行だけ、ボタンごとの説明は各ボタンの title、
+  // 全文（従来の 6 文そのまま）は「?」で開いたときだけ。情報は捨てない
+  const HINT_FULL =
     '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
     + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
     + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
     + '子タスク追加だけは投函せず、バックグラウンドの Claude Code に TODO.md を編集させます（送り先のセッションは使わない）。'
     + '「追加の指示」に書いた文面は、実行・プラン作成・説明の文面の末尾に足して送ります（空欄なら今までどおり）。削除・子タスク追加には効きません。'
-    + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。');
+    + '送り先は claude agents の一覧と、起動時の hook（vibeboard init が書く）で登録されたセッション。hook が使えないときは、その画面で vibeboard listen --name <名前> を回すと listen として出ます。';
+  const hint = el('div', 'task-note task-hint');
+  hint.appendChild(document.createTextNode(
+    '実行・プラン作成・説明は選んだセッションへ投函し、子タスク追加はバックグラウンドの Claude Code が処理します。'));
+  const hintToggle = el('button', 'task-hint-toggle', '?');
+  hintToggle.type = 'button';
+  hintToggle.title = '詳しい説明を開く';
+  hint.appendChild(hintToggle);
+  const hintFull = el('div', 'task-note task-hint-full', HINT_FULL);
+  hintFull.hidden = true;
+  hintToggle.addEventListener('click', () => {
+    hintFull.hidden = !hintFull.hidden;
+    hintToggle.title = hintFull.hidden ? '詳しい説明を開く' : '詳しい説明を閉じる';
+  });
   const queueBox = el('div', 'task-queue');
   queueBox.hidden = true;
   const addJobsBox = el('div', 'task-queue task-add-jobs');
   addJobsBox.hidden = true;
-  pane.append(status, hint, queueBox, addJobsBox);
+  pane.append(status, hint, hintFull, queueBox, addJobsBox);
 
   contentArea.innerHTML = '';
   contentArea.appendChild(pane);
