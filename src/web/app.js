@@ -953,6 +953,7 @@ async function openDoc(tab, key) {
 
     pageTitle.textContent = key.split('/').pop();
     topbarSub.textContent = path;
+    topbarSub.title = path;
     contentArea.innerHTML = '';
     contentArea.appendChild(buildDocLayout());
 
@@ -1732,6 +1733,7 @@ function renderDesign(category, filePath) {
   const meta = findFileMeta(category, filePath);
   pageTitle.textContent = meta ? meta.title : filename;
   topbarSub.textContent = `${category}/${filePath}`;
+  topbarSub.title = topbarSub.textContent;
 
   const wrap = document.createElement('div');
   wrap.className = 'design-frame-wrap';
@@ -1775,6 +1777,7 @@ function showEmpty() {
   clearTocObserver();
   pageTitle.textContent = 'ドキュメント';
   topbarSub.textContent = '';
+  topbarSub.title = '';
   contentArea.innerHTML = '<div class="empty-state">サイドバーからドキュメントを選択してください。</div>';
 }
 
@@ -2952,6 +2955,7 @@ async function renderTaskView(id) {
   const { node, parents } = entry;
   pageTitle.textContent = TASKS_LABEL;
   topbarSub.textContent = node.text;
+  topbarSub.title = node.text;
 
   const el = mkEl;
   const pane = el('div', 'task-pane');
@@ -3245,6 +3249,7 @@ function renderCustomTabView(name, itemId) {
   if (!tab) return;
   pageTitle.textContent = tab.label;
   topbarSub.textContent = itemId;
+  topbarSub.title = itemId;
 
   // 同じタブ・同じ id で再描画される場合は iframe を作り直さない
   if (
