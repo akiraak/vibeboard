@@ -279,7 +279,10 @@ function decodePath(p) {
   return p.split('/').map(decodeURIComponent).join('/');
 }
 
-// 本文 (.md-content / TODO ツリー) 内の相対リンクのクリックを SPA の hash 遷移へ変換する。
+// 本文 (.md-content / TODO ツリー) 内の相対リンクを SPA の hash 遷移へ変換する。
+// 描画時に href 属性そのものを hash URL へ書き換える（rewriteRelativeDocLinks）。
+// クリック委譲だけだと修飾キー付き（Ctrl+クリック / 中クリック）が素通しになり、
+// ブラウザが相対 href のまま /rules.md を取りにいって Cannot GET になっていた（2026-09-11）。
 // 元の Markdown は無編集のまま（GitHub / VSCode プレビューの相対リンクを壊さない）。
 // 画像・音声等のメディアはサーバ側で /files に書き換え済み（先頭 /）なのでここでは扱わない。
 // **今開いているファイルの場所からの相対**で解決する（Files タブの TODO.md なら root から。
@@ -321,13 +324,29 @@ function resolveRelativeToDoc(rel) {
   return segs.length > 0 ? segs.join('/') : null;
 }
 
+// root 以下の相対リンクの href を hash URL へ書き換える（描画のたびに呼ぶ）。
+// 書き換えたリンクには data-doc-link を印に付ける（クリック委譲が同一 hash の再描画に使う）。
+function rewriteRelativeDocLinks(root) {
+  if (!root) return;
+  root.querySelectorAll('a[href]').forEach((a) => {
+    const targetHash = resolveDocLinkHash(a.getAttribute('href'));
+    if (!targetHash) return;
+    a.setAttribute('href', targetHash);
+    a.dataset.docLink = '1';
+  });
+}
+
 // contentArea（安定コンテナ。子は描画ごとに差し替え）に委譲クリックを 1 度だけ張る。
+// href は描画時に書き換え済みなので通常はデフォルトの hash 遷移で足りるが、
+// 今開いているファイルへのリンク（同一 hash。hashchange が発火しない）の再描画をここで拾う。
 function setupDocLinkInterception() {
   contentArea.addEventListener('click', (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const a = e.target.closest('a');
     if (!a || !contentArea.contains(a)) return;
-    const targetHash = resolveDocLinkHash(a.getAttribute('href'));
+    const targetHash = a.dataset.docLink === '1'
+      ? a.getAttribute('href')
+      : resolveDocLinkHash(a.getAttribute('href'));
     if (!targetHash) return;
     e.preventDefault();
     if (location.hash === targetHash) handleRoute();
@@ -1081,6 +1100,7 @@ async function renderDocPreviewBody() {
     const div = document.createElement('div');
     div.className = 'md-content';
     div.innerHTML = data.html;
+    rewriteRelativeDocLinks(div);
 
     const withToc = true;
     if (withToc) {
@@ -1146,6 +1166,7 @@ async function renderDocTreeBody() {
     if (typeof data.mtime === 'number') docState.mtime = data.mtime;
     body.innerHTML = '';
     body.appendChild(buildTodoTree(data));
+    rewriteRelativeDocLinks(body);
   } catch (err) {
     body.innerHTML = '';
     const div = document.createElement('div');
