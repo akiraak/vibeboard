@@ -1574,6 +1574,34 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .tasks-global-btn:hover { background: var(--hover); }
 .tasks-global-btn:disabled { opacity: 0.5; cursor: default; }
 .tasks-global-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* タスク追加（バックグラウンドの claude -p）。入力は共通のダイアログ（showAddTaskDialog）、
+   tasks-global の下にはジョブ状態だけが付く */
+.tasks-global-wrap { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.tasks-global-wrap .tasks-global { border-bottom: none; margin-bottom: 0; }
+.tasks-global-btns { display: flex; gap: 6px; }
+.task-add-note { color: var(--text-mute); font-size: 11px; }
+.task-add-jobs { font-size: 11px; }
+.tasks-global-wrap .task-add-jobs { margin-top: 0; border-top: none; padding: 0 6px 8px; }
+/* 追加ジョブのコンパクト表示（1 行 ＝ チップ ＋ 文面。文面は省略記号で切る） */
+.task-add-line { display: flex; align-items: center; gap: 6px; padding: 2px 0; min-width: 0; }
+.task-add-line-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); }
+.task-add-line button {
+  flex: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.task-add-line button:hover { background: var(--hover); }
+.task-add-line button:disabled { opacity: 0.5; cursor: default; }
+.task-queue-state.running { color: #0550ae; border-color: #b6d5f5; background: #ddf4ff; }
+.modal-add-input { width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 6px; }
+.modal-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.modal-btn-primary:hover { background: var(--accent); border-color: var(--accent); opacity: 0.88; }
 .task-queue-item {
   display: flex;
   align-items: baseline;

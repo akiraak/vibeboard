@@ -26,6 +26,14 @@ export interface CustomTabConfig {
   command: string[] | null;
 }
 
+// Tasks タブの「タスク追加」（バックグラウンドの claude -p）の調整。省略可
+export interface TaskAddConfig {
+  /** --model に渡す値（null なら CLI の既定モデル） */
+  model: string | null;
+  /** 1 ジョブの制限時間（秒） */
+  timeoutSec: number;
+}
+
 export interface VibeboardConfig {
   root: string;
   port: number;
@@ -34,6 +42,7 @@ export interface VibeboardConfig {
   categories: CategoryConfig[];
   files: FilesConfig;
   customTabs: CustomTabConfig[];
+  taskAdd: TaskAddConfig;
 }
 
 interface ParsedArgs {
@@ -108,6 +117,7 @@ interface RawConfigFile {
   editable?: unknown;
   files?: unknown;
   customTabs?: unknown;
+  taskAdd?: unknown;
 }
 
 function readConfigFile(root: string, explicitPath: string | undefined): {
@@ -302,6 +312,25 @@ function normalizeCustomTabs(
   return out;
 }
 
+const DEFAULT_TASK_ADD: TaskAddConfig = { model: null, timeoutSec: 120 };
+
+function normalizeTaskAdd(raw: unknown): TaskAddConfig {
+  if (raw === undefined) return { ...DEFAULT_TASK_ADD };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('taskAdd はオブジェクトである必要があります');
+  }
+  const e = raw as Record<string, unknown>;
+  const model = typeof e.model === 'string' && e.model.trim() ? e.model.trim() : null;
+  let timeoutSec = DEFAULT_TASK_ADD.timeoutSec;
+  if (e.timeoutSec !== undefined) {
+    if (typeof e.timeoutSec !== 'number' || !Number.isFinite(e.timeoutSec) || e.timeoutSec <= 0) {
+      throw new Error(`taskAdd.timeoutSec は正の数である必要があります: ${String(e.timeoutSec)}`);
+    }
+    timeoutSec = e.timeoutSec;
+  }
+  return { model, timeoutSec };
+}
+
 export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: string[] } {
   const parsed = parseArgs(argv);
 
@@ -348,6 +377,7 @@ export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: 
     ...categories.map(c => c.name),
   ]);
   const customTabs = normalizeCustomTabs(raw.customTabs, reservedForCustomTabs);
+  const taskAdd = normalizeTaskAdd(raw.taskAdd);
 
   return {
     config: {
@@ -358,6 +388,7 @@ export function resolveConfig(argv: string[]): { config: VibeboardConfig; rest: 
       categories,
       files,
       customTabs,
+      taskAdd,
     },
     rest: parsed.rest,
   };

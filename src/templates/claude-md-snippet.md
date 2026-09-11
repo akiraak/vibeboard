@@ -17,6 +17,10 @@ node vibeboard/dist/cli.js --root .
   プラン作成は `docs/plans/` のプランファイルと `TODO.md` へのリンク・子タスクだけを作らせる（実装はしない）。
   ボタンの上の **「追加の指示（任意）」** に書いた文面は、実行 / プラン作成 / 説明の文面の末尾に足して送る（空欄なら今までどおり。Ctrl+Enter で実行）。
   左ペインの上の「プロジェクト全体」に **commit & push** があり、タスクとは無関係に作業ツリーの変更をまとめてコミットして push させる（メッセージと `TODO.md` / `DONE.md` の整理はセッションが行う）。
+  **タスク追加**（「プロジェクト全体」）と**子タスク追加**（タスク詳細）は投函せず、vibeboard がバックグラウンドの
+  Claude Code（`claude -p`。許すツールは `TODO.md` の Edit だけ）を起こして `TODO.md` に足させる。1 行目が
+  タスクの文面（そのまま入る）、2 行目以降はメモ。成功判定は「`TODO.md` に文面が増えたか」の事後検査で、
+  モデル・制限時間は `vibeboard.config.json` の `taskAdd`（`model` / `timeoutSec`。既定は CLI の既定モデル・120 秒）。
   送り先は `claude agents` の一覧から選ぶ。セッションは起動時の hook（`vibeboard init` が `.claude/settings.json` に書く）で
   自分の受信口を vibeboard に登録し、vibeboard がそこへ文面を投函する。登録が無くても Linux なら `claude agents` の pid から
   受信口（`$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`）を引いて投函する。hook が使えない環境では

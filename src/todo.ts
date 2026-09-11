@@ -558,6 +558,48 @@ export function buildPlanPrompt(tree: TodoTree, id: string): string | null {
 }
 
 /**
+ * 「タスク追加」の prompt。TODO.md に 1 件だけ足させる。
+ * ⚠ **セッションへ投函せず、バックグラウンドの `claude -p` に渡す**（server.ts の /api/tasks/add。
+ * 許すツールは呼び出し側が Read と TODO.md の Edit だけに絞る）。
+ * 文面は一字一句そのまま使わせ、**置き場所の判断だけ**を任せる。1 行目がタスク、2 行目以降はメモ。
+ */
+export function buildAddTaskPrompt(tree: TodoTree, parentId: string | null, text: string): string | null {
+  const body = sanitizeNote(text);
+  if (!body) return null;
+  const [firstRaw, ...restLines] = body.split('\n');
+  const first = firstRaw.trim();
+  if (!first) return null;
+  const memo = restLines.join('\n').trim();
+  const parts: string[] = ['このプロジェクトの TODO.md に、次のタスクを 1 件だけ追加してください。', ''];
+  parts.push('追加するタスクの文面:');
+  parts.push(first, '');
+  if (memo) {
+    parts.push('タスクに付けるメモ（2 行目以降）:');
+    parts.push(memo, '');
+  }
+  if (parentId !== null) {
+    const ctx = findTaskById(tree, parentId);
+    if (!ctx) return null;
+    parts.push('次の親タスクの子タスクとして追加してください（現在の部分木。どの位置に挿すかの判断に使う）:');
+    parts.push(renderSubtree(ctx.node), '');
+  } else {
+    parts.push('トップレベルのタスクとして、内容に合うセクション・並びの位置に追加してください（迷ったら末尾）。', '');
+  }
+  parts.push('守ること:');
+  parts.push('1. タスクの行は `- [ ] 文面` の形。**文面は上の 1 行を一字一句そのまま使う**（要約・言い換えをしない）');
+  parts.push('2. メモがあれば、タスクの行の下に字下げして付ける（チェックボックスなし）');
+  if (parentId !== null) {
+    parts.push('3. 親タスクの子（1 段深い字下げ）の末尾に追加する。親が見つからなければ何も変更しない');
+  } else {
+    parts.push('3. 置き場所はこのプロジェクトの CLAUDE.md のタスク管理ルールに従って選ぶ');
+  }
+  parts.push('4. **TODO.md 以外のファイルは変更しない。タスクの実装・調査には着手しない。コミットしない**');
+  parts.push('5. **既存の行の削除・並べ替え・書き換えをしない**（追加だけ）');
+  parts.push('6. 追加できないときは TODO.md を変更せず、理由だけを出力して終わる');
+  return parts.join('\n');
+}
+
+/**
  * 「commit & push」の prompt。作業ツリーの変更をコミットして push させる。**タスクには紐づかない**（プロジェクト全体の操作）。
  * vibeboard 自身は git を叩かない（メッセージ・TODO.md の整理・秘密の除外は、セッションの判断と承認の中でやらせる）。
  */
