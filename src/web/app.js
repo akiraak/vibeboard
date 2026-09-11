@@ -2954,8 +2954,10 @@ async function renderTaskView(id) {
   }
   const { node, parents } = entry;
   pageTitle.textContent = TASKS_LABEL;
-  topbarSub.textContent = node.text;
-  topbarSub.title = node.text;
+  // ⚠ タスクの文面は topbar に出さない（本文の h1 に出ている。長い文面が最上部を占領していた。
+  //   利用者の指示 2026-09-11「この右上の部分は不要なので削除して」）
+  topbarSub.textContent = '';
+  topbarSub.title = '';
 
   const el = mkEl;
   const pane = el('div', 'task-pane');
