@@ -209,19 +209,38 @@ export function readSource(absPath: string): SourceContent {
 
 /**
  * tmp へ書いて rename する（既存の編集機能と同じアトミック書き込み）。
+ * 保存先がすでにあれば、その権限（`.env` の 600 など）を引き継ぐ。
+ * rename は tmp の権限のまま置き換わるので、何もしないと既定の権限（umask 022 なら 644）に戻ってしまう。
  * シンボリックリンクに対しては**リンク自体を置き換えてしまう**ので、
  * 呼ぶ側で `isSymlink` を弾いてから使うこと。
  */
 export function writeSourceAtomic(absPath: string, data: string): void {
   const tmp = `${absPath}.tmp.${process.pid}.${Date.now()}`;
+  const mode = existingMode(absPath);
   try {
-    fs.writeFileSync(tmp, data, 'utf-8');
+    if (mode === undefined) {
+      fs.writeFileSync(tmp, data, 'utf-8');
+    } else {
+      // 書いている途中の中身をほかのユーザーから読めないよう 600 で作ってから、元の権限を付け直す
+      // （writeFileSync の mode は umask で削られるので chmod で付ける）
+      fs.writeFileSync(tmp, data, { encoding: 'utf-8', mode: 0o600 });
+      fs.chmodSync(tmp, mode);
+    }
     fs.renameSync(tmp, absPath);
   } catch (e) {
     if (fs.existsSync(tmp)) {
       try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     }
     throw e;
+  }
+}
+
+/** 既存ファイルの権限ビット（setuid などを含む下位 12 ビット）。無ければ undefined */
+function existingMode(absPath: string): number | undefined {
+  try {
+    return fs.statSync(absPath).mode & 0o7777;
+  } catch {
+    return undefined;
   }
 }
 

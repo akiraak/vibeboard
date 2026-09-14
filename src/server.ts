@@ -1221,14 +1221,9 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       res.status(404).json({ success: false, data: null, error: 'そのタスクは TODO.md にありません' });
       return;
     }
-    const tmp = `${src.absPath}.tmp.${process.pid}.${Date.now()}`;
     try {
-      fs.writeFileSync(tmp, next, 'utf-8');
-      fs.renameSync(tmp, src.absPath); // tmp → 本体の原子的置換
+      writeSourceAtomic(src.absPath, next); // tmp → 本体の原子的置換（元の権限を引き継ぎ、失敗時は tmp を消す）
     } catch {
-      if (fs.existsSync(tmp)) {
-        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-      }
       res.status(500).json({ success: false, data: null, error: '書き込みに失敗しました' });
       return;
     }
