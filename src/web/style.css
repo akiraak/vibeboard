@@ -208,6 +208,68 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   display: none;
 }
 
+/* サイドバーの検索箱（並び順の行の下に貼り付く） */
+.sidebar-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  background: var(--side-bg);
+  border-bottom: 1px solid var(--side-border);
+}
+
+.sidebar-sort:not([hidden]) + .sidebar-search {
+  top: 37px;
+}
+
+.sidebar-search[hidden] {
+  display: none;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg, transparent);
+  border: 1px solid var(--side-border);
+  border-radius: 4px;
+}
+
+.sidebar-search-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.search-count {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.search-hit-path {
+  font-size: 11px;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tasks-search > li > .search-hit-path {
+  padding: 0 12px 6px 30px;
+}
+
+.search-hit-snippet {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sidebar-sort-group {
   display: flex;
   flex: 1;
