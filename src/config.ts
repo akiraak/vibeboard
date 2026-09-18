@@ -60,6 +60,20 @@ const DEFAULT_CATEGORIES: CategoryConfig[] = [
   { name: 'specs', label: 'Specs', path: 'docs/specs', archive: false },
 ];
 
+/** plans のタブが無い（hidden）ときのプランの置き場所 */
+export const DEFAULT_PLANS_DIR = 'docs/plans';
+
+/**
+ * 「プラン作成」の文面・画面の説明・CLAUDE.md の定型文に入れるプランの置き場所
+ * （root 相対・`/` 区切り）。設定した plans の path に従い、plans を hidden にしていれば既定に戻す
+ * （タブを隠していてもプランを作る場面はある）。
+ */
+export function plansDirOf(config: Pick<VibeboardConfig, 'root' | 'categories'>): string {
+  const plans = config.categories.find(c => c.name === 'plans');
+  if (!plans) return DEFAULT_PLANS_DIR;
+  return path.relative(config.root, plans.path).split(path.sep).join('/') || '.';
+}
+
 // UI 側で固定のスラッグを持つタブ。カテゴリ名にも customTab 名にも使えない
 const RESERVED_CATEGORY_NAMES = new Set(['todo', 'files', 'tasks']);
 const FORBIDDEN_PATH_CHARS = /[\/\\]/;

@@ -31,7 +31,7 @@
   - 本文の `[plan](docs/plans/x.md)` のような相対リンクは、Files タブからでも vibeboard の中で開く
   - `TODO.md` の書式は変えない（id を書かせない）。解釈はサーバの純関数 `src/todo.ts`（`GET /api/todo/<path>`）
 - **Tasks タブで `TODO.md` のタスクを選び、このプロジェクトで動いている Claude Code のセッションへ渡して実行**
-  - ボタンは 4 つ。`実行`（こなして DONE.md へ移す）/ `プラン作成`（`docs/plans/` のプランファイルと TODO.md へのリンク・
+  - ボタンは 4 つ。`実行`（こなして DONE.md へ移す）/ `プラン作成`（plans の path〔既定 `docs/plans/`〕のプランファイルと TODO.md へのリンク・
     子タスクだけを作らせ、実装には入らせない）/ `説明`（変更させず意図・進め方・影響を説明させる）/
     `削除`（TODO.md からその部分木の行だけを消す。DONE.md には移さない。確認を挟む）
   - **ボタンの上の「追加の指示（任意）」**にその場の条件を書ける（例: 「Phase 6 だけやって」）。書いた文面は
@@ -313,6 +313,7 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
   //   - 既定に無い name → タブを足す
   //   - "hidden": true → そのタブを出さない（既定のタブを消す唯一の方法）
   // 並びは配列の順。書かれていない既定は、既定の順で 1 つ前の既定の直後（無ければ先頭）に入る。
+  // plans の path は Tasks タブの「プラン作成」の文面と CLAUDE.md の定型文にも入る（hidden なら docs/plans）。
   // 省略・空配列は既定のまま（Plans, Specs）
   "categories": [
     { "name": "workflows", "label": "Workflows" }, // 足したタブ。この例の並びは Workflows, Plans, Specs
@@ -514,6 +515,8 @@ Tasks タブは、`TODO.md` のタスクから組んだ文面を **Claude Code �
 
 `node vibeboard/dist/cli.js init --root .` が下記をマーカー付きで `CLAUDE.md` に書き込む。手で貼り付けるなら
 このまま末尾にコピーすれば良い（マーカーごと貼ること。`init` で再上書きできなくなる）。
+下は既定の場合。`init` は `docs/plans` を**設定した plans の path に置き換えて**書く（plans を hidden にしていれば
+`docs/plans` のまま）ので、置き場所を変えたプロジェクトで読み替えの注記を足す必要は無い。
 
 ````markdown
 <!-- vibeboard:begin -->

@@ -293,6 +293,16 @@ test('プラン作成の prompt はプランと TODO.md のリンク・子タス
   assert.equal(buildPlanPrompt(tree, 'deadbeef'), null);
 });
 
+test('プラン作成の prompt は渡されたプランの置き場所を使う（既定は docs/plans）', () => {
+  const tree = parseTodo(TASK_SAMPLE);
+  const child = byText(tree, '子のタスク');
+  const prompt = buildPlanPrompt(tree, child.id, 'notes/plans');
+  assert.match(prompt, /`notes\/plans\/<task-name>\.md` にプランファイルを作る/);
+  assert.match(prompt, /\[plan\]\(notes\/plans\/<task-name>\.md\)/);
+  // タスク本文（サンプルは docs/plans/foo.md にリンクしている）ではなく、指示の部分に既定が残っていないこと
+  assert.doesNotMatch(prompt.slice(prompt.indexOf('やること:')), /docs\/plans/);
+});
+
 test('commit & push の prompt はタスクに紐づかず、status / diff の確認、DONE.md の整理、秘密の除外、push まで求める', () => {
   const prompt = buildCommitPrompt();
   assert.match(prompt, /作業ツリーの変更をコミットして push してください/);

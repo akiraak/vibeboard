@@ -1,11 +1,14 @@
 import fs from 'fs';
 import path from 'path';
+import { DEFAULT_PLANS_DIR } from './config';
 
 export interface InitOptions {
   root: string;
   dryRun: boolean;
   /** `.claude/settings.json` に SessionStart / SessionEnd の hook を書くか（既定 true。`--no-hooks` で false） */
   hooks?: boolean;
+  /** 定型文の `{{plansDir}}` に入れるプランの置き場所（config.ts の plansDirOf。省略時は docs/plans） */
+  plansDir?: string;
 }
 
 export interface InitResult {
@@ -42,7 +45,9 @@ function buildBlock(snippet: string): string {
 export function planInit(opts: InitOptions): InitResult {
   const claudeMdPath = path.join(opts.root, 'CLAUDE.md');
   const templatePath = resolveTemplatePath();
-  const snippet = fs.readFileSync(templatePath, 'utf-8');
+  // プランの置き場所は設定した plans の path に合わせる（書き写した先で読み替えさせない）
+  const snippet = fs.readFileSync(templatePath, 'utf-8')
+    .split('{{plansDir}}').join(opts.plansDir || DEFAULT_PLANS_DIR);
   const block = buildBlock(snippet);
 
   let prevContent = '';

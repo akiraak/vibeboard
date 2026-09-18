@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
 import type { CategoryConfig, CustomTabConfig, VibeboardConfig } from './config';
+import { plansDirOf } from './config';
 import { proxyToTab } from './ext';
 import { searchFiles } from './search';
 import { reclaimPort, removePidFile, writePidFile } from './portGuard';
@@ -1147,7 +1148,9 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       const tree = parseTodo(src.raw, { mdPath: 'TODO.md' });
       const ctx = findTaskById(tree, id);
       const builders: Record<Exclude<TaskKind, 'commit'>, (t: typeof tree, i: string) => string | null> = {
-        run: buildPrompt, explain: buildExplainPrompt, plan: buildPlanPrompt,
+        run: buildPrompt,
+        explain: buildExplainPrompt,
+        plan: (t, i) => buildPlanPrompt(t, i, plansDirOf(config)),
       };
       const prompt = builders[kind](tree, id);
       if (!ctx || prompt === null) {
@@ -1393,6 +1396,8 @@ export async function startServer(config: VibeboardConfig): Promise<void> {
       categories: clientCategories,
       files: clientFiles,
       customTabs: clientCustomTabs,
+      // 「プラン作成」の説明文に出すプランの置き場所（文面と同じ plansDirOf）
+      plansDir: plansDirOf(config),
     });
     return indexHtmlRaw
       .replace(/__VIBEBOARD_TITLE__/g, escapeHtml(config.title))

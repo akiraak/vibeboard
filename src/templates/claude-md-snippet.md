@@ -8,13 +8,13 @@
 node vibeboard/dist/cli.js --root .
 ```
 
-`http://localhost:3010` でプロジェクト直下の `docs/plans/`・`docs/specs/`・`TODO.md`・`DONE.md`・`CLAUDE.md`・`README.md` を閲覧・編集できる。
+`http://localhost:3010` でプロジェクト直下の `{{plansDir}}/`・`docs/specs/`・`TODO.md`・`DONE.md`・`CLAUDE.md`・`README.md` を閲覧・編集できる。
 
 - `Files` タブでプロジェクト内のファイル（`TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md` を含む）をプレビュー表示・編集できる。`TODO.md` はツリー表示つき
   - 編集は楽観ロック（mtime チェック）付き。外部で先に更新されていた場合は保存時に 409 を返し、リロード / 手元維持 / 強制上書き を選べる
   - `fs.watch` + 2 秒ポーリングで外部変更を検知し、SSE でクライアントへ即時反映する
 - `Tasks` タブで `TODO.md` のタスクを、このプロジェクトで動いている Claude Code のセッションへ渡して実行できる（実行 / プラン作成 / 説明 / 削除）。
-  プラン作成は `docs/plans/` のプランファイルと `TODO.md` へのリンク・子タスクだけを作らせる（実装はしない）。
+  プラン作成は `{{plansDir}}/` のプランファイルと `TODO.md` へのリンク・子タスクだけを作らせる（実装はしない）。
   ボタンの上の **「追加の指示（任意）」** に書いた文面は、実行 / プラン作成 / 説明の文面の末尾に足して送る（空欄なら今までどおり。Ctrl+Enter で実行）。
   左ペインの上の「プロジェクト全体」に **commit & push** があり、タスクとは無関係に作業ツリーの変更をまとめてコミットして push させる（メッセージと `TODO.md` / `DONE.md` の整理はセッションが行う）。
   **タスク追加**（「プロジェクト全体」）と**子タスク追加**（タスク詳細）は投函せず、vibeboard がバックグラウンドの
@@ -42,7 +42,7 @@ node vibeboard/dist/cli.js --root .
 - 字下げが親子。vibeboard はこれをツリーとして表示する
 
   ```markdown
-  - [ ] 親タスク [plan](docs/plans/foo.md)
+  - [ ] 親タスク [plan]({{plansDir}}/foo.md)
     - [x] Step 1: 済んだ子タスク
     - [~] Step 2: 進行中の子タスク
       - 決定: この子タスクに付くメモ（チェックボックスなし）
@@ -60,15 +60,15 @@ node vibeboard/dist/cli.js --root .
 
 作業（実装・調査いずれも）を始めるときは、コードに手を入れる前に以下を行う。
 
-1. **プランファイルを作成する**: `docs/plans/<task-name>.md` に実装プラン or 調査プランを作成する
+1. **プランファイルを作成する**: `{{plansDir}}/<task-name>.md` に実装プラン or 調査プランを作成する
    - 目的・背景、対応方針、影響範囲、テスト方針を最低限記載する
    - 複数 Phase / Step に分かれる場合はファイル内でも Phase / Step を明示する
 2. **`TODO.md` に該当項目があるか確認する**
    - 無ければ適切なセクションに追加する
-   - 既存項目があれば、その項目に作成したプランファイルへのリンクを追記する（例: `[plan](docs/plans/<task-name>.md)`）
+   - 既存項目があれば、その項目に作成したプランファイルへのリンクを追記する（例: `[plan]({{plansDir}}/<task-name>.md)`）
 3. **複数 Phase / Step がある場合は `TODO.md` に子タスクとして追加する**
    - 親項目の下にインデントしたチェックボックスで Phase / Step を列挙する
    - Phase / Step が完了するごとにチェックを入れ、全完了で親項目を `DONE.md` に移す
 4. **作業完了時の後片付け**
    - 親タスクを `DONE.md` に移動する
-   - 対応するプランファイルは `docs/plans/archive/` に移動する
+   - 対応するプランファイルは `{{plansDir}}/archive/` に移動する

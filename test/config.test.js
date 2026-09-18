@@ -154,3 +154,13 @@ test('files.exclude: .git を書かなくても .git 配下の読み書きは拒
   assert.equal(resolveSource(root, 'dist/cli.js', exclude).status, 403);
   assert.equal(resolveSource(root, '.env', exclude).ok, true);
 });
+
+// 「プラン作成」の文面と CLAUDE.md の定型文に入れるプランの置き場所
+const { plansDirOf } = require('../dist/config.js');
+
+test('plansDirOf: 既定は docs/plans、path を変えればそれ、hidden なら docs/plans に戻す', (t) => {
+  const dirOf = (config) => plansDirOf(resolveConfig(['--root', tempRoot(t, config)]).config);
+  assert.equal(dirOf(undefined), 'docs/plans');
+  assert.equal(dirOf({ categories: [{ name: 'plans', path: 'notes/plans' }] }), 'notes/plans');
+  assert.equal(dirOf({ categories: [{ name: 'plans', path: 'notes/plans', hidden: true }] }), 'docs/plans');
+});

@@ -542,14 +542,15 @@ export function buildExplainPrompt(tree: TodoTree, id: string): string | null {
 /**
  * 「プラン作成」の prompt。プランファイルと TODO.md のリンク・子タスクだけを作らせ、実装には入らせない。
  * 作業着手ルール（プラン → TODO.md にリンク → Phase / Step を子タスクに）を、このタスクに当てはめた形。
+ * plansDir は設定した plans の path（root 相対。server.ts が config の plansDirOf で渡す）。
  */
-export function buildPlanPrompt(tree: TodoTree, id: string): string | null {
+export function buildPlanPrompt(tree: TodoTree, id: string, plansDir = 'docs/plans'): string | null {
   const ctx = findTaskById(tree, id);
   if (!ctx) return null;
   const parts = taskBody(ctx, 'このプロジェクトの TODO.md にある次のタスクのプランを作ってください。');
   parts.push('やること:');
-  parts.push('1. `docs/plans/<task-name>.md` にプランファイルを作る（目的・背景、対応方針、影響範囲、テスト方針。Phase / Step に分かれるならファイル内でも明示する）');
-  parts.push('2. TODO.md のこのタスクにプランファイルへのリンクを付ける（例: `[plan](docs/plans/<task-name>.md)`）');
+  parts.push(`1. \`${plansDir}/<task-name>.md\` にプランファイルを作る（目的・背景、対応方針、影響範囲、テスト方針。Phase / Step に分かれるならファイル内でも明示する）`);
+  parts.push(`2. TODO.md のこのタスクにプランファイルへのリンクを付ける（例: \`[plan](${plansDir}/<task-name>.md)\`）`);
   parts.push('3. Phase / Step があれば、このタスクの子タスク（字下げした `- [ ]`）として TODO.md に足す');
   parts.push('');
   parts.push('**プランを作るだけで、実装には着手しないでください。** TODO.md の変更はリンクと子タスクの追加だけにし、DONE.md には移さないでください。');

@@ -20,6 +20,8 @@ const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories)
       { name: 'specs', label: 'Specs', archive: false },
     ];
 const CATEGORY_BY_NAME = new Map(CATEGORY_DEFS.map(c => [c.name, c]));
+// 「プラン作成」でプランを作らせる場所。サーバが文面に入れるのと同じ値（config.ts の plansDirOf）
+const PLANS_DIR = typeof VB_CONFIG.plansDir === 'string' && VB_CONFIG.plansDir ? VB_CONFIG.plansDir : 'docs/plans';
 // customTabs はサーバ側で正規化済み（name/label/base）。base は同一オリジンの
 // `/ext/<name>`（サーバがプラグインの baseUrl へ中継する）。未指定なら空配列。
 const CUSTOM_TABS = Array.isArray(VB_CONFIG.customTabs) ? VB_CONFIG.customTabs : [];
@@ -3186,7 +3188,7 @@ async function renderTaskView(id) {
   const btnRun = el('button', 'primary', '実行');
   btnRun.title = 'このタスクを送り先のセッションへ投函して実行させる（会話も承認もそのセッションの画面で進む）';
   const btnPlan = el('button', null, 'プラン作成');
-  btnPlan.title = 'docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせる（実装はしない）';
+  btnPlan.title = `${PLANS_DIR}/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせる（実装はしない）`;
   const btnExplain = el('button', null, '説明');
   btnExplain.title = '何も変更せず、このタスクの意図・進め方・影響を説明させる';
   const btnAddChild = el('button', null, '子タスク追加');
@@ -3206,7 +3208,7 @@ async function renderTaskView(id) {
   // 全文（従来の 6 文そのまま）は「?」で開いたときだけ。情報は捨てない
   const HINT_FULL =
     '実行・プラン作成・説明は送り先のセッションへ投函します（会話も承認もそのセッションの画面で進む。待機中なら新しいターンが始まり、実行中なら合間に読まれる）。'
-    + 'プラン作成は docs/plans/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。'
+    + `プラン作成は ${PLANS_DIR}/ のプランファイルと、TODO.md へのリンク・子タスクだけを作らせます（実装はしない）。`
     + '説明は変更せず内容を説明するだけ。削除は TODO.md からこのタスクを消します（DONE.md には移しません）。'
     + '子タスク追加だけは投函せず、バックグラウンドの Claude Code に TODO.md を編集させます（送り先のセッションは使わない）。'
     + '「追加の指示」に書いた文面は、実行・プラン作成・説明の文面の末尾に足して送ります（空欄なら今までどおり）。削除・子タスク追加には効きません。'

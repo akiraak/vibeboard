@@ -2,7 +2,7 @@
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
-import { resolveConfig } from './config';
+import { plansDirOf, resolveConfig } from './config';
 import { startServer } from './server';
 import { runInit } from './init';
 import { runUpdate } from './update';
@@ -106,7 +106,7 @@ if (sub === 'init') {
   const passthrough = initArgs.filter(a => a !== '--dry-run' && a !== '--no-hooks');
   try {
     const { config } = resolveConfig(passthrough);
-    runInit({ root: config.root, dryRun, hooks });
+    runInit({ root: config.root, dryRun, hooks, plansDir: plansDirOf(config) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[vibeboard init] 失敗しました: ${msg}`);
