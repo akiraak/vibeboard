@@ -114,3 +114,43 @@ test('categories: 配列でなければ弾く', (t) => {
   const root = tempRoot(t, { categories: { name: 'plans' } });
   assert.throws(() => resolveConfig(['--root', root]), /categories は配列/);
 });
+
+// files.exclude は既定（.git / node_modules）に足す。除外は読み書きの防壁でもあるので、
+// 書き写し忘れで既定が外れないことを resolveSource でも確かめる
+const { resolveSource } = require('../dist/source.js');
+
+function filesOf(root) {
+  return resolveConfig(['--root', root]).config.files;
+}
+
+test('files.exclude: 書かなければ既定の .git / node_modules', (t) => {
+  assert.deepEqual(filesOf(tempRoot(t)).exclude, ['.git', 'node_modules']);
+  assert.deepEqual(filesOf(tempRoot(t, { files: { label: 'All' } })), {
+    label: 'All',
+    exclude: ['.git', 'node_modules'],
+  });
+});
+
+test('files.exclude: 書いたものは既定に足され、既定は外れない', (t) => {
+  assert.deepEqual(
+    filesOf(tempRoot(t, { files: { exclude: ['dist', '.venv'] } })).exclude,
+    ['.git', 'node_modules', 'dist', '.venv'],
+  );
+  assert.deepEqual(filesOf(tempRoot(t, { files: { exclude: [] } })).exclude, ['.git', 'node_modules']);
+});
+
+test('files.exclude: 既定や同じ名前を書いても重複しない', (t) => {
+  assert.deepEqual(
+    filesOf(tempRoot(t, { files: { exclude: ['.git', 'node_modules', 'dist', 'dist'] } })).exclude,
+    ['.git', 'node_modules', 'dist'],
+  );
+});
+
+test('files.exclude: .git を書かなくても .git 配下の読み書きは拒否し、.env は通す', (t) => {
+  const root = tempRoot(t, { files: { exclude: ['dist'] } });
+  const { exclude } = filesOf(root);
+  assert.equal(resolveSource(root, '.git/config', exclude).status, 403);
+  assert.equal(resolveSource(root, 'node_modules/x/index.js', exclude).status, 403);
+  assert.equal(resolveSource(root, 'dist/cli.js', exclude).status, 403);
+  assert.equal(resolveSource(root, '.env', exclude).ok, true);
+});

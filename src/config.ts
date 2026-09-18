@@ -13,6 +13,7 @@ export interface CategoryConfig {
 export interface FilesConfig {
   label: string;
   // ツリーからも読み書きからも外す名前。パスのどのセグメントに現れても対象。
+  // 既定（.git / node_modules）は常に含む。設定の exclude はそこに足すだけ
   exclude: string[];
 }
 
@@ -262,7 +263,9 @@ function normalizeFiles(raw: unknown): FilesConfig {
   if (!Array.isArray(e.exclude)) {
     throw new Error('files.exclude は配列である必要があります');
   }
-  const exclude: string[] = [];
+  // 既定は書いても書かなくても外さない。除外は読み書きの防壁でもあるので、
+  // 書き写し忘れで .git が画面から編集できるようになるのを防ぐ（外す手段はあえて作らない）
+  const exclude: string[] = [...DEFAULT_EXCLUDES];
   for (let i = 0; i < e.exclude.length; i++) {
     const v = e.exclude[i];
     if (typeof v !== 'string' || !v.trim()) {
@@ -273,7 +276,7 @@ function normalizeFiles(raw: unknown): FilesConfig {
     if (FORBIDDEN_PATH_CHARS.test(name) || name === '.' || name === '..') {
       throw new Error(`files.exclude[${i}] にはパス区切りを含められません: ${name}`);
     }
-    exclude.push(name);
+    if (!exclude.includes(name)) exclude.push(name);
   }
   return { label, exclude };
 }
