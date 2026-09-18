@@ -10,7 +10,10 @@ const TASKS_LABEL = 'Tasks';
 
 // サーバから注入された設定。`__VIBEBOARD__` には categories / files / customTabs も含まれる。
 const VB_CONFIG = (typeof window !== 'undefined' && window.__VIBEBOARD__) || {};
-const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories) && VB_CONFIG.categories.length > 0
+// 既定の plans / specs を補うのはサーバ（config.ts）の役目。届いた配列は空でもそのまま使う
+// （全部を hidden にした設定で、画面だけに Plans / Specs が出ないように）。
+// 下の既定は注入そのものが無いとき（サーバを通さずに開いたとき）の保険
+const CATEGORY_DEFS = Array.isArray(VB_CONFIG.categories)
   ? VB_CONFIG.categories
   : [
       { name: 'plans', label: 'Plans', archive: true },

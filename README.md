@@ -294,6 +294,8 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
 `<root>/vibeboard.config.json` を置くと、UI のタブ・カテゴリ・編集対象ファイルを
 プロジェクトごとにカスタマイズできる。`--config <path>` で別パスを指定することも可能。
 ファイルが無ければデフォルト（`plans` / `specs` / `TODO.md` / `DONE.md` / `CLAUDE.md` / `README.md`）で起動する。
+書いた設定は既定への**差分**として読む。`categories` にタブを書いても、既定の Plans / Specs は
+`hidden: true` で消さない限り出る（既定を書き写す必要は無い）。
 
 ### スキーマ
 
@@ -305,16 +307,22 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
   // バインドするポート (--port / VIBEBOARD_PORT と同等)
   "port": 3010,
 
-  // ドキュメントカテゴリ。配列順がタブ表示順になる。
-  // 省略時は [plans (archive: true), specs (archive: false)]
+  // ドキュメントカテゴリ。既定の plans（docs/plans・archive: true）と specs（docs/specs）は
+  // **常に含まれる**。ここに書くのは既定への差分:
+  //   - 既定と同じ name → 書いたフィールドだけ上書き（書かないフィールドは既定のまま）
+  //   - 既定に無い name → タブを足す
+  //   - "hidden": true → そのタブを出さない（既定のタブを消す唯一の方法）
+  // 並びは配列の順。書かれていない既定は、既定の順で 1 つ前の既定の直後（無ければ先頭）に入る。
+  // 省略・空配列は既定のまま（Plans, Specs）
   "categories": [
+    { "name": "workflows", "label": "Workflows" }, // 足したタブ。この例の並びは Workflows, Plans, Specs
     {
       "name": "plans",       // 必須。URL/ハッシュに使うスラッグ。'todo'・'files'・'tasks' は予約語、ユニーク
-      "label": "Plans",      // タブの表示名。省略時は name
-      "path": "docs/plans",  // root からの相対パス（または絶対パス）。省略時は `docs/<name>`
-      "archive": true        // true で archive ボタンと /archive エンドポイントが有効化される
-    },
-    { "name": "specs", "label": "Specs", "path": "docs/specs" }
+      "label": "Plans",      // タブの表示名。省略時は既定の label（足したタブは name）
+      "path": "plans",       // root からの相対パス（または絶対パス）。省略時は既定の path（足したタブは `docs/<name>`）
+      "archive": true,       // true で archive ボタンと /archive エンドポイントが有効化される。省略時は既定の値（足したタブは false）
+      "hidden": false        // true でタブを出さない。省略時は false
+    }
   ],
 
   // editable（旧 Root タブの設定）は廃止した。書いてあっても弾かず無視する
@@ -349,10 +357,24 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
 
 ### カスタム例
 
+タブを 1 つ足すだけなら、足すものだけを書く（タブは Plans, Specs, Designs の順）。
+
+```json
+{
+  "categories": [
+    { "name": "designs", "label": "Designs", "path": "docs/design" }
+  ]
+}
+```
+
+既定のタブを使わず、自前のタブだけにする場合は、既定を `hidden` で消す。
+
 ```json
 {
   "title": "my-research",
   "categories": [
+    { "name": "plans", "hidden": true },
+    { "name": "specs", "hidden": true },
     { "name": "notes",   "label": "Notes",   "path": "notes",          "archive": true },
     { "name": "papers",  "label": "Papers",  "path": "references"      },
     { "name": "designs", "label": "Designs", "path": "docs/designs"    }
@@ -364,9 +386,10 @@ vibeboard listen [options]       Tasks タブの待ち受け（hook が使えな
 
 設定ファイル読み込み時に以下を弾く（起動失敗）。
 
-- `categories[].name` が空 / 重複 / `todo`・`files`・`tasks`（予約語） / パス区切り文字を含む
-- `categories[].path` が root の外を指している
-- `categories` を空配列にしている（省略してデフォルトに戻す）
+- `categories` が配列でない
+- `categories[].name` が空 / 重複 / `todo`・`files`・`tasks`（予約語） / パス区切り文字を含む（`hidden` の要素も対象）
+- `categories[].path` が root の外を指している（`hidden` の要素は見ない）
+- `categories[].hidden` が真偽値でない
 - （`editable` は旧 Root タブの設定。弾かずに無視し、起動時に一言出す）
 - `files.exclude` が配列でない / 要素が空文字 / パス区切り文字（`/` `\\`）や `.` `..` を含む
 - `customTabs[].name` が空 / 英数と `-` 以外を含む / 他タブ（`todo`・`files`・`tasks`・categories）と衝突 / 重複

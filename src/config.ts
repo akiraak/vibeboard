@@ -53,6 +53,7 @@ interface ParsedArgs {
   rest: string[];
 }
 
+// 既定のカテゴリ。設定ファイルの categories に書いても消えない（消すのは `hidden: true` だけ）
 const DEFAULT_CATEGORIES: CategoryConfig[] = [
   { name: 'plans', label: 'Plans', path: 'docs/plans', archive: true },
   { name: 'specs', label: 'Specs', path: 'docs/specs', archive: false },
@@ -160,19 +161,59 @@ function ensureUnderRoot(absPath: string, root: string, label: string): void {
   }
 }
 
+// 設定ファイルの categories の 1 要素。書かれなかったフィールドは undefined のまま持ち、
+// 既定のカテゴリを上書きするときに「書いたものだけ差し替える」のに使う
+interface CategoryEntry {
+  index: number;
+  name: string;
+  hidden: boolean;
+  label?: string;
+  path?: string;
+  archive?: boolean;
+}
+
+// categories は既定（plans / specs）への**差分**として読む:
+// - 既定と同じ name → 書いたフィールドだけ上書き / 既定に無い name → タブを足す
+// - `hidden: true` → そのタブを出さない（既定を消す唯一の方法）
+// - 並びは書いた順。書かれていない既定は、既定の順で 1 つ前の既定の直後（無ければ先頭）に入る
 function normalizeCategories(raw: unknown, root: string): CategoryConfig[] {
-  if (raw === undefined) {
-    // デフォルトは相対パスで持っているので root に紐づけて絶対化する
-    return DEFAULT_CATEGORIES.map(c => ({ ...c, path: path.resolve(root, c.path) }));
-  }
-  if (!Array.isArray(raw)) {
+  const list = raw === undefined ? [] : raw;
+  if (!Array.isArray(list)) {
     throw new Error('categories は配列である必要があります');
   }
-  if (raw.length === 0) {
-    throw new Error('categories を空にはできません (省略すればデフォルトが使われます)');
+  const entries = readCategoryEntries(list);
+  const byName = new Map(entries.map(e => [e.name, e]));
+
+  const order = entries.map(e => e.name);
+  let prev: string | null = null;
+  for (const def of DEFAULT_CATEGORIES) {
+    if (!byName.has(def.name)) {
+      order.splice(prev === null ? 0 : order.indexOf(prev) + 1, 0, def.name);
+    }
+    prev = def.name;
   }
-  const seen = new Set<string>();
+
   const out: CategoryConfig[] = [];
+  for (const name of order) {
+    const e = byName.get(name);
+    if (e?.hidden) continue;
+    const def = DEFAULT_CATEGORIES.find(d => d.name === name);
+    const rawPath = e?.path ?? def?.path ?? `docs/${name}`;
+    const absPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(root, rawPath);
+    ensureUnderRoot(absPath, root, e ? `categories[${e.index}].path` : `既定のカテゴリ ${name} の path`);
+    out.push({
+      name,
+      label: e?.label ?? def?.label ?? name,
+      path: absPath,
+      archive: e?.archive ?? def?.archive ?? false,
+    });
+  }
+  return out;
+}
+
+function readCategoryEntries(raw: unknown[]): CategoryEntry[] {
+  const seen = new Set<string>();
+  const out: CategoryEntry[] = [];
   for (let i = 0; i < raw.length; i++) {
     const entry = raw[i];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -191,12 +232,17 @@ function normalizeCategories(raw: unknown, root: string): CategoryConfig[] {
       throw new Error(`categories[${i}].name が重複しています: ${name}`);
     }
     seen.add(name);
-    const label = typeof e.label === 'string' && e.label.trim() ? e.label.trim() : name;
-    const rawPath = typeof e.path === 'string' && e.path.trim() ? e.path.trim() : `docs/${name}`;
-    const absPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(root, rawPath);
-    ensureUnderRoot(absPath, root, `categories[${i}].path`);
-    const archive = typeof e.archive === 'boolean' ? e.archive : false;
-    out.push({ name, label, path: absPath, archive });
+    if (e.hidden !== undefined && typeof e.hidden !== 'boolean') {
+      throw new Error(`categories[${i}].hidden は true / false で指定してください: ${String(e.hidden)}`);
+    }
+    out.push({
+      index: i,
+      name,
+      hidden: e.hidden === true,
+      label: typeof e.label === 'string' && e.label.trim() ? e.label.trim() : undefined,
+      path: typeof e.path === 'string' && e.path.trim() ? e.path.trim() : undefined,
+      archive: typeof e.archive === 'boolean' ? e.archive : undefined,
+    });
   }
   return out;
 }
