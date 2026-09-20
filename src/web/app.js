@@ -2814,6 +2814,16 @@ let tasksView = (() => {
   }
 })();
 let tasksClockTimer = null;
+// 済んだタスクは、ツリーと同じく既定では並べない。「済みも出す」を入れたときだけ薄く出す（1 日の進み具合を読むため）
+const STORAGE_TASKS_TL_DONE = 'vibeboard.tasksTimelineDone';
+let tasksTimelineDone = (() => {
+  try {
+    return localStorage.getItem(STORAGE_TASKS_TL_DONE) === '1';
+  } catch {
+    return false;
+  }
+})();
+const timelineShown = entries => (tasksTimelineDone ? entries : entries.filter(e => e.node.state !== 'done'));
 
 const pad2 = n => String(n).padStart(2, '0');
 function nowStamp() {
@@ -2901,7 +2911,7 @@ function nowLine(now) {
   return li;
 }
 
-// タイムラインの 1 行（左ペイン・その日の一覧で共通の中身）。済んだタスクも出す（1 日の進み具合を読むため）
+// タイムラインの 1 行（左ペイン・その日の一覧で共通の中身）
 // 文面の頭に期日と同じ時刻（`06:35 …`・`12:45〜13:05 …`・`08:00〜 …`）が書いてあれば、表示では落とす（時刻の列と二重になる）
 const LEAD_TIME_RE = /^(\d{1,2}):(\d{2})(?:\s*[〜～~\-–]\s*(?:\d{1,2}:\d{2})?)?[\s:：]*/;
 function leadTimeLength(node) {
@@ -2938,9 +2948,39 @@ function timelineRowParts(node, now, rich) {
   return parts;
 }
 
-function paintTasksTimeline(tree, days) {
+function renderTimelineDoneToggle() {
+  const label = document.createElement('label');
+  label.className = 'tasks-tl-done-toggle';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = tasksTimelineDone;
+  box.addEventListener('change', () => {
+    tasksTimelineDone = box.checked;
+    try {
+      localStorage.setItem(STORAGE_TASKS_TL_DONE, tasksTimelineDone ? '1' : '0');
+    } catch {
+      // 保存できなくても動く
+    }
+    paintTasksSidebar(tasksState);
+    const parsed = parseHash();
+    if (parsed && parsed.category === TASKS_TAB && parsed.filePath.startsWith(TASKS_DAY_PREFIX)) renderTaskDayView(parsed.filePath.slice(TASKS_DAY_PREFIX.length));
+  });
+  label.append(box, document.createTextNode(' 済みも出す'));
+  return label;
+}
+
+function paintTasksTimeline(tree, allDays) {
   const now = nowStamp();
   const frag = document.createDocumentFragment();
+  frag.appendChild(renderTimelineDoneToggle());
+  // 並べる行が 1 本も無い日（全部済んだ日）は、見出しごと出さない
+  const days = allDays.map(d => ({ ...d, shown: timelineShown(d.entries) })).filter(d => d.shown.length > 0);
+  if (days.length === 0) {
+    const none = document.createElement('div');
+    none.className = 'tasks-tl-rest';
+    none.textContent = '期日のあるタスクは全部済んでいます';
+    frag.appendChild(none);
+  }
   for (const day of days) {
     const head = document.createElement('a');
     head.className = 'nav-item tasks-day' + (day.date === now.date ? ' tasks-today' : '');
@@ -2960,7 +3000,7 @@ function paintTasksTimeline(tree, days) {
     const ul = document.createElement('ul');
     ul.className = 'tasks-tree tasks-timeline';
     let nowPlaced = day.date !== now.date;
-    for (const e of day.entries) {
+    for (const e of day.shown) {
       const node = e.node;
       if (!nowPlaced && node.when.start && node.when.start > now.time) {
         ul.appendChild(nowLine(now));
@@ -2992,7 +3032,7 @@ function paintTasksTimeline(tree, days) {
   refreshActiveHighlight();
   ensureTasksClock();
   // 未選択のときの行き先: 今日（無ければこれから来る最初の日・それも無ければ最後の日）の一覧
-  const target = days.find(d => d.date >= now.date) || days[days.length - 1];
+  const target = days.find(d => d.date >= now.date) || days[days.length - 1] || allDays[allDays.length - 1];
   return [{ node: { id: `${TASKS_DAY_PREFIX}${target.date}` } }];
 }
 
@@ -3036,6 +3076,8 @@ async function renderTaskDayView(date) {
     pane.appendChild(a);
   }
   const ol = el('ol', 'task-day-list');
+  const shown = timelineShown(day.entries);
+  if (shown.length === 0) pane.appendChild(el('div', 'task-note', 'この日のタスクは全部済んでいます（左の「済みも出す」で見られます）'));
   let shared = day.entries.length > 1 ? Math.min(...day.entries.map(e => e.parents.length)) : 0;
   while (shared > 0 && !day.entries.every(e => e.parents.slice(0, shared).join('\n') === day.entries[0].parents.slice(0, shared).join('\n'))) shared -= 1;
   let nowPlaced = date !== now.date;
@@ -3043,7 +3085,7 @@ async function renderTaskDayView(date) {
     ol.appendChild(el('li', 'tasks-now', `いま ${now.time}`));
     nowPlaced = true;
   };
-  for (const e of day.entries) {
+  for (const e of shown) {
     const node = e.node;
     if (!nowPlaced && node.when.start && node.when.start > now.time) placeNow();
     const li = el('li', 'task-day-row');
@@ -3057,7 +3099,7 @@ async function renderTaskDayView(date) {
     if (sub) li.appendChild(el('div', 'task-day-sub', sub));
     ol.appendChild(li);
   }
-  if (!nowPlaced) placeNow();
+  if (!nowPlaced && shown.length > 0) placeNow();
   pane.appendChild(ol);
   contentArea.innerHTML = '';
   contentArea.appendChild(pane);

@@ -1318,6 +1318,8 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
   list-style: none;
 }
 .tasks-now::after { content: ''; flex: 1; border-top: 1px solid #cf222e; }
+.tasks-tl-done-toggle { display: flex; align-items: center; gap: 4px; margin: 0 12px 4px; font-size: 11px; color: var(--text-mute); cursor: pointer; }
+.tasks-tl-done-toggle input { margin: 0; }
 .tasks-tl-rest { padding: 12px 14px 4px; font-size: 11px; color: var(--text-sub); }
 
 /* 右ペイン: その日の一覧と、タスクの詳細の期日 */
