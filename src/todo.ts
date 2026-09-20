@@ -51,6 +51,23 @@ export interface TodoInbound {
   taskId: string;
 }
 
+/**
+ * タスクの期日（`期日: 2026-09-21 12:45〜13:05` の行）。Tasks タブのタイムラインが使う。
+ * 時刻は書かれたままの土地の時刻で、時差は持たない。
+ */
+export interface TodoWhen {
+  /** YYYY-MM-DD */
+  date: string;
+  /** HH:MM。時刻が無ければ null */
+  start: string | null;
+  /** HH:MM。幅（`〜`）で書かれたときだけ */
+  end: string | null;
+  /** 後ろに残った添え書き（`PDT` など）。無ければ空 */
+  label: string;
+  /** 時刻だけの行で、日付を親の期日から借りた */
+  inherited: boolean;
+}
+
 export interface TodoNode {
   id: string;
   /** 1 始まりの行番号 */
@@ -71,6 +88,8 @@ export interface TodoNode {
   docs: TodoDoc[];
   refs: TodoRef[];
   inbound: TodoInbound[];
+  /** 期日。`期日:` の行が無い・読めないなら null */
+  when: TodoWhen | null;
   children: TodoNode[];
   /** 子孫の数（自分を除く） */
   total: number;
@@ -225,6 +244,52 @@ export function parseRelationLine(note: string): RelationLine | null {
   return { kind, links, paths, targets };
 }
 
+/** 期日の行のラベル。関係行と同じく、行頭にこれと `:` があるときだけ読む。 */
+const WHEN_LABEL_RE = /^(?:期日|予定|日時|due|when)$/i;
+const WHEN_VALUE_RE =
+  /^(?:(\d{4})-(\d{1,2})-(\d{1,2}))?\s*(?:(\d{1,2}):(\d{2})(?:\s*[〜～~\-–]\s*(\d{1,2}):(\d{2}))?)?(?:\s+(.*))?$/;
+
+export interface WhenLine {
+  /** YYYY-MM-DD。時刻だけの行なら null（親から借りる） */
+  date: string | null;
+  start: string | null;
+  end: string | null;
+  label: string;
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+function validDate(y: number, m: number, d: number): boolean {
+  if (m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/**
+ * メモ行が期日の行なら分解する。違う・読めないなら null（その行はふつうのメモのまま残る）。
+ * 形: `期日: 2026-09-21` / `期日: 2026-09-21 06:35` / `期日: 2026-09-21 12:45〜13:05` / `期日: 06:35`（日付は親から）
+ */
+export function parseWhenLine(note: string): WhenLine | null {
+  const m = RELATION_LINE_RE.exec(note.trim());
+  if (!m || !WHEN_LABEL_RE.test(m[1].trim())) return null;
+  const v = WHEN_VALUE_RE.exec(m[2].trim());
+  if (!v || (v[1] === undefined && v[4] === undefined)) return null;
+  let date: string | null = null;
+  if (v[1] !== undefined) {
+    const [y, mo, d] = [Number(v[1]), Number(v[2]), Number(v[3])];
+    if (!validDate(y, mo, d)) return null;
+    date = `${v[1]}-${pad2(mo)}-${pad2(d)}`;
+  }
+  const time = (h?: string, mi?: string): string | null | undefined => {
+    if (h === undefined || mi === undefined) return null;
+    if (Number(h) > 23 || Number(mi) > 59) return undefined;
+    return `${pad2(Number(h))}:${mi}`;
+  };
+  const start = time(v[4], v[5]);
+  const end = time(v[6], v[7]);
+  if (start === undefined || end === undefined) return null;
+  return { date, start, end, label: (v[8] || '').trim() };
+}
+
 /** 文面で相手のタスクを引く。完全一致 → 先頭一致 → 部分一致の順で、1 件に絞れたときだけ返す。 */
 function findTask(
   target: string,
@@ -355,6 +420,7 @@ export function parseTodo(markdown: string, options: ParseTodoOptions = {}): Tod
       docs: [],
       refs: [],
       inbound: [],
+      when: null,
       children: [],
       total: 0,
       done: 0,
@@ -419,6 +485,28 @@ export function parseTodo(markdown: string, options: ParseTodoOptions = {}): Tod
         if (found.node) found.node.inbound.push({ kind: rel.kind, taskId: node.id });
       }
     }
+  }
+
+  // 期日。`all` は書かれた順 ＝ 親が先なので、時刻だけの行が借りる日付はもう決まっている
+  const nodeById = new Map(all.map(n => [n.id, n] as const));
+  for (const node of all) {
+    let line: WhenLine | null = null;
+    for (const note of node.notes) {
+      line = parseWhenLine(note);
+      if (line) break;
+    }
+    if (!line) continue;
+    let date = line.date;
+    if (!date) {
+      for (let p = node.parentId; p && !date; ) {
+        const parent = nodeById.get(p);
+        if (!parent) break;
+        if (parent.when) date = parent.when.date;
+        p = parent.parentId;
+      }
+    }
+    if (!date) continue;
+    node.when = { date, start: line.start, end: line.end, label: line.label, inherited: !line.date };
   }
 
   // 子孫の数

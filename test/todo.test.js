@@ -15,6 +15,7 @@ const {
   hasTaskLines,
   parseRelationLine,
   parseTodo,
+  parseWhenLine,
   removeTask,
   resolveDocPath,
   sanitizeNote,
@@ -381,4 +382,83 @@ test('削除は改行コードを変えない / 無い id は null', () => {
   assert.ok(!lines.includes('- [ ] A'));
   assert.ok(lines.includes('- [ ] B'));
   assert.equal(removeTask(crlf, 'deadbeef'), null);
+});
+
+// ---- 期日（Tasks タブのタイムライン）
+
+const WHEN_SAMPLE = [
+  '- [ ] 月曜の段取り',
+  '  期日: 2026-09-21',
+  '  - [ ] 朝の確認',
+  '    期日: 06:35',
+  '    - [x] 孫も親の日付を借りる',
+  '      予定： 6:45 PDT',
+  '  - [ ] 窓の中',
+  '    期日: 12:45〜13:05',
+  '  - [~] 関門',
+  '    期日: 2026-09-22 13:30',
+  '  - [ ] 期日なし',
+  '    メモだけ',
+  '- [ ] 借りる先が無い',
+  '  期日: 07:00',
+  '- [ ] 読めない',
+  '  期日: 来週のどこか',
+  '- [ ] 2 行ある',
+  '  期日: 2026-10-01',
+  '  期日: 2026-10-02',
+].join('\n');
+
+test('期日の行の 4 つの形を読む', () => {
+  assert.deepEqual(parseWhenLine('期日: 2026-09-21'), { date: '2026-09-21', start: null, end: null, label: '' });
+  assert.deepEqual(parseWhenLine('期日: 2026-9-5 6:35'), { date: '2026-09-05', start: '06:35', end: null, label: '' });
+  assert.deepEqual(parseWhenLine('期日: 2026-09-21 12:45〜13:05'), { date: '2026-09-21', start: '12:45', end: '13:05', label: '' });
+  assert.deepEqual(parseWhenLine('期日: 06:35'), { date: null, start: '06:35', end: null, label: '' });
+});
+
+test('期日のラベルの別名・全角コロン・幅の記号・添え書き', () => {
+  for (const label of ['期日', '予定', '日時', 'due', 'When']) {
+    assert.equal(parseWhenLine(`${label}: 2026-09-21`).date, '2026-09-21', label);
+  }
+  assert.equal(parseWhenLine('期日： 2026-09-21').date, '2026-09-21');
+  for (const sep of ['〜', '～', '~', '-', ' - ']) {
+    assert.equal(parseWhenLine(`期日: 12:45${sep}13:05`).end, '13:05', sep);
+  }
+  assert.deepEqual(parseWhenLine('期日: 2026-09-21 06:35 PDT（ET 09:35）'),
+    { date: '2026-09-21', start: '06:35', end: null, label: 'PDT（ET 09:35）' });
+});
+
+test('ありえない日付・時刻と、期日でない行は読まない', () => {
+  for (const bad of ['期日: 2026-13-01', '期日: 2026-02-30', '期日: 25:00', '期日: 12:60', '期日: 12:00〜24:30',
+    '期日: 来週', '期日:', '関連: 2026-09-21', '2026-09-21 にやる']) {
+    assert.equal(parseWhenLine(bad), null, bad);
+  }
+});
+
+test('時刻だけの期日は親（その親も）の日付を借りる', () => {
+  const byText = Object.fromEntries(flat(parseTodo(WHEN_SAMPLE)).map(n => [n.text, n]));
+  assert.deepEqual(byText['月曜の段取り'].when, { date: '2026-09-21', start: null, end: null, label: '', inherited: false });
+  assert.deepEqual(byText['朝の確認'].when, { date: '2026-09-21', start: '06:35', end: null, label: '', inherited: true });
+  assert.deepEqual(byText['孫も親の日付を借りる'].when, { date: '2026-09-21', start: '06:45', end: null, label: 'PDT', inherited: true });
+  assert.deepEqual(byText['窓の中'].when, { date: '2026-09-21', start: '12:45', end: '13:05', label: '', inherited: true });
+  assert.equal(byText['関門'].when.date, '2026-09-22');
+  assert.equal(byText['関門'].when.inherited, false);
+});
+
+test('期日が無い・借りる先が無い・読めないタスクは when が null で、行はメモに残る', () => {
+  const byText = Object.fromEntries(flat(parseTodo(WHEN_SAMPLE)).map(n => [n.text, n]));
+  assert.equal(byText['期日なし'].when, null);
+  assert.equal(byText['借りる先が無い'].when, null);
+  assert.equal(byText['読めない'].when, null);
+  assert.deepEqual(byText['読めない'].notes, ['期日: 来週のどこか']);
+  assert.deepEqual(byText['朝の確認'].notes, ['期日: 06:35']);
+});
+
+test('期日が 2 行あれば最初の 1 行', () => {
+  const byText = Object.fromEntries(flat(parseTodo(WHEN_SAMPLE)).map(n => [n.text, n]));
+  assert.equal(byText['2 行ある'].when.date, '2026-10-01');
+});
+
+test('期日の行を足してもタスクの id は動かない', () => {
+  const ids = md => flat(parseTodo(md)).map(n => n.id);
+  assert.deepEqual(ids('- [ ] a\n  期日: 2026-09-21\n  - [ ] b\n    期日: 06:35'), ids('- [ ] a\n  - [ ] b'));
 });

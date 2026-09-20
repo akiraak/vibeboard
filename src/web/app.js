@@ -2045,9 +2045,10 @@ function handleRoute() {
     }
     if (needSidebarRerender) renderSidebar();
     // 閉じた枝の中のタスクへ飛んだ（関係チップなど）ときは描き直して枝を開く
-    else if (tasksState.tree && !sidebarNav.querySelector(`.tasks-item[data-path="${CSS.escape(filePath)}"]`)) paintTasksSidebar(tasksState);
+    else if (tasksState.tree && !sidebarNav.querySelector(`.nav-item[data-path="${CSS.escape(filePath)}"]`) && !(tasksView === 'timeline' && sidebarNav.querySelector('.tasks-timeline'))) paintTasksSidebar(tasksState);
     else refreshActiveHighlight();
-    renderTaskView(filePath);
+    if (filePath.startsWith(TASKS_DAY_PREFIX)) renderTaskDayView(filePath.slice(TASKS_DAY_PREFIX.length));
+    else renderTaskView(filePath);
     return;
   }
 
@@ -2679,6 +2680,12 @@ function paintTasksSidebar(state) {
   }
   const terms = searchTerms(searchQuery[TASKS_TAB]);
   if (terms.length > 0) return paintTasksSearch(entries, terms);
+  // 期日（`期日:` の行）が 1 本でもあれば ツリー ｜ タイムライン を切り替えられる。無ければ今までの見た目のまま
+  const days = timelineDays(state.tree);
+  if (days.length > 0) {
+    sidebarNav.appendChild(renderTasksViewSwitch());
+    if (tasksView === 'timeline') return paintTasksTimeline(state.tree, days);
+  }
   const parsed = parseHash();
   const selectedId = parsed && parsed.category === TASKS_TAB ? parsed.filePath : null;
   const ancestors = new Set(selectedId ? taskAncestorIds(state.tree, selectedId) : []);
@@ -2793,6 +2800,269 @@ function paintTasksSearch(entries, terms) {
   return hits.length > 0 ? hits : null;
 }
 
+// ---- タイムライン: 期日（`期日:` の行 → node.when）のあるタスクを、日ごと・時刻の順に並べる。
+// ツリーと同じ木の別の並べ方で、行を選んだ後（詳細・実行）は同じ経路。時刻は TODO.md に書かれたままの
+// 土地の時刻で、「いま」「過ぎた」はブラウザの時計と比べる（時差は持たない）。
+const STORAGE_TASKS_VIEW = 'vibeboard.tasksView';
+const TASKS_DAY_PREFIX = '@day/';
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+let tasksView = (() => {
+  try {
+    return localStorage.getItem(STORAGE_TASKS_VIEW) === 'timeline' ? 'timeline' : 'tree';
+  } catch {
+    return 'tree';
+  }
+})();
+let tasksClockTimer = null;
+
+const pad2 = n => String(n).padStart(2, '0');
+function nowStamp() {
+  const d = new Date();
+  return { date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`, time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}` };
+}
+function dayLabel(date) {
+  const [y, m, d] = date.split('-').map(Number);
+  return `${m}/${d}（${WEEKDAYS[new Date(y, m - 1, d).getDay()]}）`;
+}
+function whenTimeLabel(when) {
+  if (!when || !when.start) return '';
+  return when.end ? `${when.start}〜${when.end}` : when.start;
+}
+function whenLabel(when) {
+  return [dayLabel(when.date), whenTimeLabel(when), when.label].filter(Boolean).join(' ');
+}
+// 期日を過ぎたのに済んでいない（中止は数えない）。時刻があれば終わり（無ければ始まり）と比べ、日付だけならその日が終わってから
+function isOverdue(node, now) {
+  if (!node.when || node.state === 'done' || node.state === 'cancelled') return false;
+  if (node.when.date !== now.date) return node.when.date < now.date;
+  // 終わりの無い時刻（`08:00` だけ）は始まりの時刻。着手済み（[~]）なら、その日のうちは過ぎた扱いにしない
+  if (!node.when.end && node.state === 'active') return false;
+  const t = node.when.end || node.when.start;
+  return !!t && t < now.time;
+}
+
+// 日ごとにまとめる。⚠ 時刻の無い親で、同じ日の期日を持つ子孫がいるものは「その日の入れ物」なので行にしない
+// （日の見出しの下に文面だけ出す）。並びは 時刻 → 書かれた順
+function timelineDays(tree) {
+  const byDate = new Map();
+  const holdsDay = (n, date) => n.children.some(c => (c.when && c.when.date === date) || holdsDay(c, date));
+  flattenTasks(tree).forEach((e, order) => {
+    const w = e.node.when;
+    if (!w) return;
+    if (!byDate.has(w.date)) byDate.set(w.date, { date: w.date, entries: [], containers: [] });
+    const day = byDate.get(w.date);
+    if (!w.start && holdsDay(e.node, w.date)) day.containers.push(e);
+    else day.entries.push({ ...e, order });
+  });
+  const days = [...byDate.values()].filter(d => d.entries.length > 0).sort((a, b) => (a.date < b.date ? -1 : 1));
+  for (const d of days) {
+    // 時刻の無い行は、書かれた順で直前にある行の時刻の位置に置く（「朝」「引け後」のような行が書いた場所に出る）
+    let last = '';
+    for (const e of d.entries) {
+      if (e.node.when.start) last = e.node.when.start;
+      e.key = e.node.when.start || last;
+    }
+    d.entries.sort((a, b) => (a.key === b.key ? a.order - b.order : a.key < b.key ? -1 : 1));
+    d.done = d.entries.filter(e => e.node.state === 'done').length;
+  }
+  return days;
+}
+
+function renderTasksViewSwitch() {
+  const box = document.createElement('div');
+  box.className = 'tasks-view-switch';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', 'タスクの並べ方');
+  for (const [key, label] of [['tree', 'ツリー'], ['timeline', 'タイムライン']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tasks-view-btn' + (tasksView === key ? ' active' : '');
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(tasksView === key));
+    b.addEventListener('click', () => {
+      if (tasksView === key) return;
+      tasksView = key;
+      try {
+        localStorage.setItem(STORAGE_TASKS_VIEW, key);
+      } catch {
+        // 保存できなくても動く
+      }
+      paintTasksSidebar(tasksState);
+    });
+    box.appendChild(b);
+  }
+  return box;
+}
+
+function nowLine(now) {
+  const li = document.createElement('li');
+  li.className = 'tasks-now';
+  li.textContent = `いま ${now.time}`;
+  return li;
+}
+
+// タイムラインの 1 行（左ペイン・その日の一覧で共通の中身）。済んだタスクも出す（1 日の進み具合を読むため）
+// 文面の頭に期日と同じ時刻（`06:35 …`・`12:45〜13:05 …`・`08:00〜 …`）が書いてあれば、表示では落とす（時刻の列と二重になる）
+const LEAD_TIME_RE = /^(\d{1,2}):(\d{2})(?:\s*[〜～~\-–]\s*(?:\d{1,2}:\d{2})?)?[\s:：]*/;
+function leadTimeLength(node) {
+  const m = node.when && node.when.start ? LEAD_TIME_RE.exec(node.text) : null;
+  return m && `${pad2(Number(m[1]))}:${m[2]}` === node.when.start ? m[0].length : 0;
+}
+
+function timelineRowParts(node, now, rich) {
+  const time = document.createElement('span');
+  time.className = 'tasks-tl-time';
+  time.textContent = whenTimeLabel(node.when) || '—';
+  const st = document.createElement('span');
+  st.className = 'tasks-st';
+  st.textContent = taskGlyph(node);
+  const text = document.createElement('span');
+  text.className = 'tasks-text';
+  const lead = leadTimeLength(node);
+  // 札は TODO のツリーと同じく inline の HTML（サーバが node.text から作ったもの）
+  const leadText = node.text.slice(0, lead);
+  if (rich && node.html && node.html.startsWith(leadText)) {
+    text.innerHTML = node.html.slice(lead);
+    // 札そのものがリンクなので、中のリンクは文字にする（入れ子のリンクにしない）
+    text.querySelectorAll('a').forEach(x => x.replaceWith(document.createTextNode(x.textContent)));
+  } else {
+    text.textContent = node.text.slice(lead);
+  }
+  const parts = [time, st, text];
+  if (isOverdue(node, now)) {
+    const late = document.createElement('span');
+    late.className = 'tasks-late';
+    late.textContent = '過ぎた';
+    parts.push(late);
+  }
+  return parts;
+}
+
+function paintTasksTimeline(tree, days) {
+  const now = nowStamp();
+  const frag = document.createDocumentFragment();
+  for (const day of days) {
+    const head = document.createElement('a');
+    head.className = 'nav-item tasks-day' + (day.date === now.date ? ' tasks-today' : '');
+    head.href = `#${TASKS_TAB}/${TASKS_DAY_PREFIX}${day.date}`;
+    head.dataset.category = TASKS_TAB;
+    head.dataset.path = `${TASKS_DAY_PREFIX}${day.date}`;
+    head.title = 'その日の一覧を右に開く';
+    const name = document.createElement('span');
+    name.textContent = dayLabel(day.date) + (day.date === now.date ? ' 今日' : '');
+    const chip = document.createElement('span');
+    chip.className = 'tasks-chip';
+    chip.textContent = `${day.done}/${day.entries.length}`;
+    chip.title = `${day.entries.length} 件のうち ${day.done} 件が済み`;
+    head.append(name, chip);
+    frag.appendChild(head);
+
+    const ul = document.createElement('ul');
+    ul.className = 'tasks-tree tasks-timeline';
+    let nowPlaced = day.date !== now.date;
+    for (const e of day.entries) {
+      const node = e.node;
+      if (!nowPlaced && node.when.start && node.when.start > now.time) {
+        ul.appendChild(nowLine(now));
+        nowPlaced = true;
+      }
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.className = 'nav-item tasks-item tasks-tl-item'
+        + (node.state === 'done' ? ' tasks-done' : node.state === 'active' ? ' tasks-active' : node.state === 'cancelled' ? ' tasks-cancelled' : '');
+      a.href = `#${TASKS_TAB}/${encodeURIComponent(node.id)}`;
+      a.dataset.category = TASKS_TAB;
+      a.dataset.path = node.id;
+      a.title = node.text;
+      a.append(...timelineRowParts(node, now));
+      li.appendChild(a);
+      ul.appendChild(li);
+    }
+    if (!nowPlaced) ul.appendChild(nowLine(now));
+    frag.appendChild(ul);
+  }
+  const undated = flattenTasks(tree).filter(e => !e.node.when && e.node.state !== 'done').length;
+  if (undated > 0) {
+    const rest = document.createElement('div');
+    rest.className = 'tasks-tl-rest';
+    rest.textContent = `期日なし ${undated} 件（ツリーで見る）`;
+    frag.appendChild(rest);
+  }
+  sidebarNav.appendChild(frag);
+  refreshActiveHighlight();
+  ensureTasksClock();
+  // 未選択のときの行き先: 今日（無ければこれから来る最初の日・それも無ければ最後の日）の一覧
+  const target = days.find(d => d.date >= now.date) || days[days.length - 1];
+  return [{ node: { id: `${TASKS_DAY_PREFIX}${target.date}` } }];
+}
+
+// 「いま」の線と「過ぎた」の印を 1 分おきに描き直す（タイムラインを見ている間だけ）
+function ensureTasksClock() {
+  if (tasksClockTimer) return;
+  tasksClockTimer = setInterval(() => {
+    if (activeCategory !== TASKS_TAB || tasksView !== 'timeline') {
+      clearInterval(tasksClockTimer);
+      tasksClockTimer = null;
+      return;
+    }
+    if (document.hidden || !tasksState.tree || searchTerms(searchQuery[TASKS_TAB]).length > 0) return;
+    paintTasksSidebar(tasksState);
+    const parsed = parseHash();
+    if (parsed && parsed.category === TASKS_TAB && parsed.filePath.startsWith(TASKS_DAY_PREFIX)) renderTaskDayView(parsed.filePath.slice(TASKS_DAY_PREFIX.length));
+  }, 60000);
+}
+
+// 右ペイン: その日の一覧（#tasks/@day/<日付>）。札は全文で、押すとタスクの詳細へ
+async function renderTaskDayView(date) {
+  clearTocObserver();
+  const state = tasksState.tree ? tasksState : await fetchTasksTree();
+  if (activeCategory !== TASKS_TAB) return;
+  const day = state.tree ? timelineDays(state.tree).find(d => d.date === date) : null;
+  if (!day) {
+    showError(state.error || 'その日に期日のあるタスクは TODO.md にありません');
+    return;
+  }
+  pageTitle.textContent = TASKS_LABEL;
+  topbarSub.textContent = '';
+  topbarSub.title = '';
+  const now = nowStamp();
+  const el = mkEl;
+  const pane = el('div', 'task-pane task-day');
+  pane.appendChild(el('h1', 'task-title', dayLabel(date) + (date === now.date ? ' 今日' : '')));
+  pane.appendChild(el('div', 'task-meta', `${date} ／ ${day.entries.length} 件のうち ${day.done} 件が済み`));
+  for (const c of day.containers) {
+    const a = el('a', 'task-day-container', c.node.text);
+    a.href = `#${TASKS_TAB}/${encodeURIComponent(c.node.id)}`;
+    pane.appendChild(a);
+  }
+  const ol = el('ol', 'task-day-list');
+  let shared = day.entries.length > 1 ? Math.min(...day.entries.map(e => e.parents.length)) : 0;
+  while (shared > 0 && !day.entries.every(e => e.parents.slice(0, shared).join('\n') === day.entries[0].parents.slice(0, shared).join('\n'))) shared -= 1;
+  let nowPlaced = date !== now.date;
+  const placeNow = () => {
+    ol.appendChild(el('li', 'tasks-now', `いま ${now.time}`));
+    nowPlaced = true;
+  };
+  for (const e of day.entries) {
+    const node = e.node;
+    if (!nowPlaced && node.when.start && node.when.start > now.time) placeNow();
+    const li = el('li', 'task-day-row');
+    const a = el('a', 'task-day-card'
+      + (node.state === 'done' ? ' tasks-done' : node.state === 'active' ? ' tasks-active' : node.state === 'cancelled' ? ' tasks-cancelled' : ''));
+    a.href = `#${TASKS_TAB}/${encodeURIComponent(node.id)}`;
+    a.append(...timelineRowParts(node, now, true));
+    li.appendChild(a);
+    // 親の列は、その日の全部の行に共通する部分（日の入れ物とその上）を省く
+    const sub = [node.when.label, e.parents.slice(shared).join(' › ')].filter(Boolean).join(' ／ ');
+    if (sub) li.appendChild(el('div', 'task-day-sub', sub));
+    ol.appendChild(li);
+  }
+  if (!nowPlaced) placeNow();
+  pane.appendChild(ol);
+  contentArea.innerHTML = '';
+  contentArea.appendChild(pane);
+}
+
 async function renderTasksSidebar() {
   sidebarNav.innerHTML = '<div class="loading-text">読み込み中...</div>';
   const state = await fetchTasksTree();
@@ -2811,7 +3081,10 @@ function refreshTasksTab() {
   tasksState.tree = null;
   renderTasksSidebar();
   const parsed = parseHash();
-  if (parsed && parsed.category === TASKS_TAB && parsed.filePath) renderTaskView(parsed.filePath);
+  if (parsed && parsed.category === TASKS_TAB && parsed.filePath) {
+    if (parsed.filePath.startsWith(TASKS_DAY_PREFIX)) renderTaskDayView(parsed.filePath.slice(TASKS_DAY_PREFIX.length));
+    else renderTaskView(parsed.filePath);
+  }
 }
 
 async function postTasks(url, body) {
@@ -3145,6 +3418,13 @@ async function renderTaskView(id) {
     parents.length > 0 ? `親: ${parents.join(' › ')}` : '',
     node.id,
   ].filter(Boolean).join(' ／ ')));
+  if (node.when) {
+    const due = el('a', 'task-when' + (isOverdue(node, nowStamp()) ? ' task-when-late' : ''), `期日 ${whenLabel(node.when)}`);
+    due.href = `#${TASKS_TAB}/${TASKS_DAY_PREFIX}${node.when.date}`;
+    due.title = 'その日の一覧を開く';
+    if (isOverdue(node, nowStamp())) due.appendChild(el('span', 'tasks-late', '過ぎた'));
+    pane.appendChild(due);
+  }
   pane.appendChild(el('pre', 'task-subtree', renderTaskSubtree(node)));
 
   const rowWin = el('div', 'task-row');

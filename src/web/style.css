@@ -1264,6 +1264,102 @@ html.pre-sidebar-collapsed .sidebar-toggle::before {
 .tasks-item.tasks-active .tasks-text, .tasks-item.tasks-active .tasks-st { color: #9a6700; }
 .tasks-item.tasks-cancelled .tasks-text { text-decoration: line-through; color: var(--text-sub); }
 
+/* Tasks タブの左ペイン: ツリー ｜ タイムライン の切り替え（期日のあるタスクが 1 本でもあるときだけ出る） */
+.tasks-view-switch { display: flex; gap: 0; margin: 6px 10px 8px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.tasks-view-btn {
+  flex: 1;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-mute);
+  background: var(--panel);
+  border: none;
+  cursor: pointer;
+}
+.tasks-view-btn + .tasks-view-btn { border-left: 1px solid var(--border); }
+.tasks-view-btn:hover { background: var(--hover); }
+.tasks-view-btn.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.tasks-view-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* タイムライン: 日の見出し → 時刻の順。済んだ行も薄く出す。文面は 2 行まで */
+.nav-item.tasks-day {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tasks-day.tasks-today { color: var(--accent); }
+.tasks-timeline { margin-left: 15px; border-left: 1px solid var(--border); padding-left: 6px; }
+.nav-item.tasks-item.tasks-tl-item { grid-template-columns: auto 14px minmax(0, 1fr) auto; align-items: start; }
+.tasks-tl-item .tasks-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; }
+.tasks-tl-time { font-size: 11px; line-height: 18px; color: var(--text-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tasks-done .tasks-text, .tasks-done .tasks-tl-time, .tasks-done .tasks-st { color: var(--text-sub); }
+.tasks-late {
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  color: #cf222e;
+  border: 1px solid #cf222e;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.tasks-now {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  padding-left: 4px;
+  font-size: 10px;
+  color: #cf222e;
+  font-variant-numeric: tabular-nums;
+  list-style: none;
+}
+.tasks-now::after { content: ''; flex: 1; border-top: 1px solid #cf222e; }
+.tasks-tl-rest { padding: 12px 14px 4px; font-size: 11px; color: var(--text-sub); }
+
+/* 右ペイン: その日の一覧と、タスクの詳細の期日 */
+.task-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -8px 0 16px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.task-when:hover { background: var(--hover); }
+.task-when-late { border-color: #cf222e; }
+.task-day-container { display: block; margin: -8px 0 16px; color: var(--text-mute); font-size: 13px; }
+.task-day-container:hover { color: var(--accent); }
+.task-day-list { list-style: none; margin: 0; padding: 0 0 0 10px; border-left: 2px solid var(--border); }
+.task-day-row { margin: 0 0 10px; }
+.task-day-card {
+  display: grid;
+  grid-template-columns: 92px 14px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.task-day-card:hover { border-color: var(--accent); }
+.task-day-card .tasks-text { white-space: normal; overflow: visible; line-height: 1.5; word-break: break-word; }
+.task-day-card .tasks-tl-time { font-size: 13px; line-height: 21px; color: var(--text); font-weight: 600; }
+.task-day-card .tasks-st { line-height: 21px; font-size: 12px; }
+.task-day-card.tasks-done { background: var(--side-bg); }
+.task-day-card.tasks-done .tasks-tl-time { color: var(--text-sub); font-weight: 400; }
+.task-day-card.tasks-active .tasks-text, .task-day-card.tasks-active .tasks-st { color: #9a6700; }
+.task-day-card.tasks-cancelled .tasks-text { text-decoration: line-through; color: var(--text-sub); }
+.task-day-sub { margin: 3px 0 0 124px; font-size: 11px; color: var(--text-sub); word-break: break-word; }
+.task-day-list .tasks-now { margin: 0 0 10px; font-size: 11px; }
+
 /* Tasks タブ（TODO.md のタスクを待ち受けている Claude Code へ渡す） */
 /* Files タブの画像プレビュー */
 .doc-image-box { padding: 12px 0; }
